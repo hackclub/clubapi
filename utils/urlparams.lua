@@ -10,11 +10,15 @@ function url.parse_query(uri)
 
     local params = {}
 
+    local preservePlus = {email = true, new_email = true, old_email = true, message = true}
+
     for key, value in query:gmatch("([^&=?]+)=([^&=?]+)") do
         -- decode percent encoding if needed
         key = key:gsub("%+", " ")
         key = key:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
-        value = value:gsub("%+", " ")
+        if not preservePlus[key] then
+            value = value:gsub("%+", " ")
+        end
         value = value:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
 
         if not (value:sub(1, 1) == '"' and value:sub(-1) == '"') then

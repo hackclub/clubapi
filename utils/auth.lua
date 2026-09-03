@@ -1,94 +1,143 @@
-local airtable = require("utils/airtable")
+local driver = require("database")
+local fs = require("fs")
 
 local auth = {}
 
-function auth.checkKey(apikey)
+local VALID_PERMS = { read = true, write = true, admin = true }
+
+local db = nil
+
+local function generateApiKey()
+    local ok, buffer = pcall(function()
+        local file = fs.open("/dev/urandom")
+        local buf = fs.new_buffer(32)
+        file:read_exact(buf)
+        return buf
+    end)
+    if not ok or not buffer then
+        return nil
+    end
+
+    local bytes = buffer:bytes()
+    local hexParts = {}
+    for i = 1, #bytes do
+        hexParts[i] = string.format("%02x", bytes[i])
+    end
+    return table.concat(hexParts)
+end
+
+local function getDb()
+    if db then
+        return db
+    end
+
+    local connStr = os.getenv("DATABASE_URL")
+    if not connStr or connStr == "" then
+        pprint({ error = "missing_database_url", message = "DATABASE_URL not set in environment or .env file" })
+        return nil
+    end
+
+    local ok, conn = pcall(driver.new, "postgres", connStr)
+    if not ok or not conn then
+        pprint({ error = "database_connection_failed", message = conn })
+        return nil
+    end
+
+    db = conn
+    return db
+end
+
+local function lookupKey(apikey)
     if type(apikey) ~= "string" or apikey == "" then
+        return nil
+    end
+
+    local conn = getDb()
+    if not conn then
+        return nil
+    end
+
+    local ok, row = pcall(function()
+        return conn:query_one("SELECT key, name, perms FROM api_keys WHERE key = $1", { apikey })
+    end)
+    if not ok or type(row) ~= "table" then
+        return nil
+    end
+
+    if row.key ~= apikey then
+        return nil
+    end
+
+    return row
+end
+
+function auth.checkKey(apikey)
+    local row = lookupKey(apikey)
+    if not row then
         return false
     end
 
-    local quotedKey = '"' .. apikey .. '"'
-    local formula = "{key} = " .. quotedKey
-
-    local ok, result = pcall(airtable.list_records, "API Keys", "Grid view", {filterByFormula = formula})
-    if not ok or type(result) ~= "table" then
-        return false
-    end
-
-    if not result.records or type(result.records) ~= "table" or #result.records == 0 then
-        return false
-    end
-
-    local first = result.records[1]
-    if not first or type(first) ~= "table" or type(first.fields) ~= "table" then
-        return false
-    end
-
-    local fields = first.fields
-    if fields.key == apikey then
-        return fields.perms or false
-    end
-
-    return false
+    return row.perms or false
 end
 
 function auth.getKeyName(apikey)
-    if type(apikey) ~= "string" or apikey == "" then
+    local row = lookupKey(apikey)
+    if not row then
         return "None"
     end
 
-    local quotedKey = '"' .. apikey .. '"'
-    local formula = "{key} = " .. quotedKey
-
-    local ok, result = pcall(airtable.list_records, "API Keys", "Grid view", {filterByFormula = formula})
-    if not ok or type(result) ~= "table" then
-        return "None"
-    end
-
-    if not result.records or type(result.records) ~= "table" or #result.records == 0 then
-        return "None"
-    end
-
-    local first = result.records[1]
-    if not first or type(first) ~= "table" or type(first.fields) ~= "table" then
-        return "None"
-    end
-
-    local fields = first.fields
-    if fields.key == apikey then
-        return fields.name or "None"
-    end
-
-    return "None"
+    return row.name or "None"
 end
 
-function auth.getKeyRecord(apikey)
+function auth.createKey(name, perms)
+    if type(name) ~= "string" or name == "" then
+        return nil, "invalid_name"
+    end
+    if not VALID_PERMS[perms] then
+        return nil, "invalid_perms (must be read, write, or admin)"
+    end
+
+    local conn = getDb()
+    if not conn then
+        return nil, "no_database_connection"
+    end
+
+    local key = generateApiKey()
+    if not key then
+        return nil, "key_generation_failed"
+    end
+
+    local ok, row = pcall(function()
+        return conn:query_one(
+            "INSERT INTO api_keys (key, name, perms) VALUES ($1, $2, $3) RETURNING key, name, perms",
+            { key, name, perms }
+        )
+    end)
+    if not ok or type(row) ~= "table" then
+        return nil, "insert_failed"
+    end
+
+    return row
+end
+
+function auth.revokeKey(apikey)
     if type(apikey) ~= "string" or apikey == "" then
         return nil
     end
 
-    local quotedKey = '"' .. apikey .. '"'
-    local formula = "{key} = " .. quotedKey
-
-    local ok, result = pcall(airtable.list_records, "API Keys", "Grid view", {filterByFormula = formula})
-    if not ok or type(result) ~= "table" then
+    local conn = getDb()
+    if not conn then
         return nil
     end
 
-    if not result.records or type(result.records) ~= "table" or #result.records == 0 then
+    local ok, row = pcall(function()
+        return conn:query_one("DELETE FROM api_keys WHERE key = $1 RETURNING key, name", { apikey })
+    end)
+    if not ok or type(row) ~= "table" or row.key ~= apikey then
         return nil
     end
 
-    local first = result.records[1]
-    if not first or type(first) ~= "table" or type(first.fields) ~= "table" then
-        return nil
-    end
-
-    if first.fields.key == apikey then
-        return first
-    end
-
-    return nil
+    return row
 end
 
 function auth.checkRead(apikey)

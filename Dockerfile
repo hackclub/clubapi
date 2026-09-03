@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y \
     wget \
     sudo
 
-RUN curl -fsSL https://astra.arkforge.net/install.sh | bash
+RUN curl -fsSL https://astra.arkforge.net/install.sh | bash -s -- -r luajit
 
 WORKDIR /app
 
