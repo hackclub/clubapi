@@ -33,13 +33,13 @@ local function getDb()
 
     local connStr = os.getenv("DATABASE_URL")
     if not connStr or connStr == "" then
-        pprint({ error = "missing_database_url", message = "DATABASE_URL not set in environment or .env file" })
+        print({ error = "missing_database_url", message = "DATABASE_URL not set in environment or .env file" })
         return nil
     end
 
     local ok, conn = pcall(driver.new, "postgres", connStr)
     if not ok or not conn then
-        pprint({ error = "database_connection_failed", message = conn })
+        print({ error = "database_connection_failed", message = conn })
         return nil
     end
 

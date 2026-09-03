@@ -76,7 +76,7 @@ end
 local function build_headers()
 	local api_key, err = get_api_key()
 	if not api_key then
-		pprint({ error = "missing_airtable_api_key", message = err })
+		print({ error = "missing_airtable_api_key", message = err })
 		return nil, err
 	end
 
@@ -91,19 +91,19 @@ end
 function airtable.list_records(table_name, view, params)
 	-- validate inputs
 	if type(table_name) ~= "string" or table_name == "" then
-		pprint({ error = "invalid_table_name", provided = table_name })
+		print({ error = "invalid_table_name", provided = table_name })
 		return nil
 	end
 
 	local base_id, err = get_base_id()
 	if not base_id then
-		pprint({ error = "missing_base_id", message = err })
+		print({ error = "missing_base_id", message = err })
 		return nil
 	end
 
 	local headers, herr = build_headers()
 	if not headers then
-		pprint({ error = "missing_headers", message = herr })
+		print({ error = "missing_headers", message = herr })
 		return nil
 	end
 
@@ -116,7 +116,7 @@ function airtable.list_records(table_name, view, params)
 		if body.filterByFormula then
 			local valid, err = airtable.validateFormula(body.filterByFormula)
 			if not valid then
-				pprint({ error = "invalid_filter_formula", message = err })
+				print({ error = "invalid_filter_formula", message = err })
 				return nil
 			end
 		end
@@ -135,14 +135,14 @@ function airtable.list_records(table_name, view, params)
 	end)
 
 	if not ok then
-		pprint({ error = "request_exception", fn = "list_records", msg = res_or_err })
+		print({ error = "request_exception", fn = "list_records", msg = res_or_err })
 		return nil
 	end
 
 	local res = res_or_err
 
 	if not res then
-		pprint({ error = "Airtable list_records request failed", status = "no response", body = nil })
+		print({ error = "Airtable list_records request failed", status = "no response", body = nil })
 		return nil
 	end
 
@@ -154,7 +154,7 @@ function airtable.list_records(table_name, view, params)
 	end)
 
 	if status >= 400 then
-		pprint({ error = "Airtable list_records request failed", status = status, body = body_text })
+		print({ error = "Airtable list_records request failed", status = status, body = body_text })
 		return ok2 and dec or nil
 	end
 
@@ -163,23 +163,23 @@ end
 
 function airtable.get_record(table_name, record_id)
 	if type(table_name) ~= "string" or table_name == "" then
-		pprint({ error = "invalid_table_name", provided = table_name })
+		print({ error = "invalid_table_name", provided = table_name })
 		return nil
 	end
 	if type(record_id) ~= "string" or record_id == "" then
-		pprint({ error = "invalid_record_id", provided = record_id })
+		print({ error = "invalid_record_id", provided = record_id })
 		return nil
 	end
 
 	local base_id, err = get_base_id()
 	if not base_id then
-		pprint({ error = "missing_base_id", message = err })
+		print({ error = "missing_base_id", message = err })
 		return nil
 	end
 
 	local headers, herr = build_headers()
 	if not headers then
-		pprint({ error = "missing_headers", message = herr })
+		print({ error = "missing_headers", message = herr })
 		return nil
 	end
 
@@ -194,14 +194,14 @@ function airtable.get_record(table_name, record_id)
 	end)
 
 	if not ok then
-		pprint({ error = "request_exception", fn = "get_record", msg = res_or_err })
+		print({ error = "request_exception", fn = "get_record", msg = res_or_err })
 		return nil
 	end
 
 	local res = res_or_err
 
 	if not res then
-		pprint({ error = "Airtable get_record request failed", status = "no response", body = nil })
+		print({ error = "Airtable get_record request failed", status = "no response", body = nil })
 		return nil
 	end
 
@@ -213,7 +213,7 @@ function airtable.get_record(table_name, record_id)
 	end)
 
 	if status >= 400 then
-		pprint({ error = "Airtable get_record request failed", status = status, body = body_text })
+		print({ error = "Airtable get_record request failed", status = status, body = body_text })
 		return ok2 and dec or nil
 	end
 
@@ -222,23 +222,23 @@ end
 
 function airtable.create_record(table_name, fields)
 	if type(table_name) ~= "string" or table_name == "" then
-		pprint({ error = "invalid_table_name", provided = table_name })
+		print({ error = "invalid_table_name", provided = table_name })
 		return nil
 	end
 	if type(fields) ~= "table" then
-		pprint({ error = "invalid_fields", provided = fields })
+		print({ error = "invalid_fields", provided = fields })
 		return nil
 	end
 
 	local base_id, err = get_base_id()
 	if not base_id then
-		pprint({ error = "missing_base_id", message = err })
+		print({ error = "missing_base_id", message = err })
 		return nil
 	end
 
 	local headers, herr = build_headers()
 	if not headers then
-		pprint({ error = "missing_headers", message = herr })
+		print({ error = "missing_headers", message = herr })
 		return nil
 	end
 
@@ -255,14 +255,14 @@ function airtable.create_record(table_name, fields)
 	end)
 
 	if not ok then
-		pprint({ error = "request_exception", fn = "create_record", msg = res_or_err })
+		print({ error = "request_exception", fn = "create_record", msg = res_or_err })
 		return nil
 	end
 
 	local res = res_or_err
 
 	if not res then
-		pprint({ error = "Airtable create_record request failed", status = "no response", body = nil })
+		print({ error = "Airtable create_record request failed", status = "no response", body = nil })
 		return nil
 	end
 
@@ -274,7 +274,7 @@ function airtable.create_record(table_name, fields)
 	end)
 
 	if status >= 400 then
-		pprint({ error = "Airtable create_record request failed", status = status, body = body_text })
+		print({ error = "Airtable create_record request failed", status = status, body = body_text })
 		return ok2 and dec or nil
 	end
 
@@ -283,27 +283,27 @@ end
 
 function airtable.update_record(table_name, record_id, fields)
 	if type(table_name) ~= "string" or table_name == "" then
-		pprint({ error = "invalid_table_name", provided = table_name })
+		print({ error = "invalid_table_name", provided = table_name })
 		return nil
 	end
 	if type(record_id) ~= "string" or record_id == "" then
-		pprint({ error = "invalid_record_id", provided = record_id })
+		print({ error = "invalid_record_id", provided = record_id })
 		return nil
 	end
 	if type(fields) ~= "table" then
-		pprint({ error = "invalid_fields", provided = fields })
+		print({ error = "invalid_fields", provided = fields })
 		return nil
 	end
 
 	local base_id, err = get_base_id()
 	if not base_id then
-		pprint({ error = "missing_base_id", message = err })
+		print({ error = "missing_base_id", message = err })
 		return nil
 	end
 
 	local headers, herr = build_headers()
 	if not headers then
-		pprint({ error = "missing_headers", message = herr })
+		print({ error = "missing_headers", message = herr })
 		return nil
 	end
 
@@ -320,14 +320,14 @@ function airtable.update_record(table_name, record_id, fields)
 	end)
 
 	if not ok then
-		pprint({ error = "request_exception", fn = "update_record", msg = res_or_err })
+		print({ error = "request_exception", fn = "update_record", msg = res_or_err })
 		return nil
 	end
 
 	local res = res_or_err
 
 	if not res then
-		pprint({ error = "Airtable update_record request failed", status = "no response", body = nil })
+		print({ error = "Airtable update_record request failed", status = "no response", body = nil })
 		return nil
 	end
 
@@ -339,7 +339,7 @@ function airtable.update_record(table_name, record_id, fields)
 	end)
 
 	if status >= 400 then
-		pprint({ error = "Airtable update_record request failed", status = status, body = body_text })
+		print({ error = "Airtable update_record request failed", status = status, body = body_text })
 		return ok2 and dec or nil
 	end
 
@@ -348,23 +348,23 @@ end
 
 function airtable.delete_record(table_name, record_id)
 	if type(table_name) ~= "string" or table_name == "" then
-		pprint({ error = "invalid_table_name", provided = table_name })
+		print({ error = "invalid_table_name", provided = table_name })
 		return nil
 	end
 	if type(record_id) ~= "string" or record_id == "" then
-		pprint({ error = "invalid_record_id", provided = record_id })
+		print({ error = "invalid_record_id", provided = record_id })
 		return nil
 	end
 
 	local base_id, err = get_base_id()
 	if not base_id then
-		pprint({ error = "missing_base_id", message = err })
+		print({ error = "missing_base_id", message = err })
 		return nil
 	end
 
 	local headers, herr = build_headers()
 	if not headers then
-		pprint({ error = "missing_headers", message = herr })
+		print({ error = "missing_headers", message = herr })
 		return nil
 	end
 
@@ -379,14 +379,14 @@ function airtable.delete_record(table_name, record_id)
 	end)
 
 	if not ok then
-		pprint({ error = "request_exception", fn = "delete_record", msg = res_or_err })
+		print({ error = "request_exception", fn = "delete_record", msg = res_or_err })
 		return nil
 	end
 
 	local res = res_or_err
 
 	if not res then
-		pprint({ error = "Airtable delete_record request failed", status = "no response", body = nil })
+		print({ error = "Airtable delete_record request failed", status = "no response", body = nil })
 		return nil
 	end
 
@@ -398,7 +398,7 @@ function airtable.delete_record(table_name, record_id)
 	end)
 
 	if status >= 400 then
-		pprint({ error = "Airtable delete_record request failed", status = status, body = body_text })
+		print({ error = "Airtable delete_record request failed", status = status, body = body_text })
 		return ok2 and dec or nil
 	end
 
@@ -409,14 +409,14 @@ end
 
 function airtable.count_records(table_name, filter_formula)
 	if type(table_name) ~= "string" or table_name == "" then
-		pprint({ error = "invalid_table_name", provided = table_name })
+		print({ error = "invalid_table_name", provided = table_name })
 		return nil
 	end
 
 	if filter_formula and type(filter_formula) == "string" and filter_formula ~= "" then
 		local valid, err = airtable.validateFormula(filter_formula)
 		if not valid then
-			pprint({ error = "invalid_filter_formula", message = err })
+			print({ error = "invalid_filter_formula", message = err })
 			return nil
 		end
 	end
