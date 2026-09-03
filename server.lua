@@ -475,6 +475,68 @@ end)
 
 -- LEADER MANAGEMENT
 
+server:post("/leader/change", function(req)
+    log.request(req:uri(), req:headers())
+    if auth.checkWrite(req:headers().authorization) then
+        local params = url.parse_query(req:uri())
+        local club_name = params.club
+        local new_email = params.new_email
+        local old_email = params.old_email
+        
+        if club_name == nil or new_email == nil or old_email == nil then
+            return {error = "Missing parameters (club, new_email, old_email)"}
+        end
+        
+        local club_name_clean = url.strip_quotes(club_name)
+        local new_email_clean = url.strip_quotes(new_email)
+        local old_email_clean = url.strip_quotes(old_email)
+
+        -- 1. Find the club to link
+        local clubFormula = airtable.safeFormula("club_name", club_name_clean)
+        local clubData = airtable.list_records("Clubs", "Full Grid", {filterByFormula = clubFormula})
+        if not clubData or not clubData.records or #clubData.records == 0 then
+            return {error = "Club not found"}
+        end
+        local club_id = clubData.records[1].id
+
+        -- 2. Create the new leader record linked to the club
+        local new_leader_fields = {
+            ["email"] = new_email_clean,
+            ["rel_leader_to_clubs"] = { club_id }
+        }
+        local created_leader = airtable.create_record("Leaders", new_leader_fields)
+        if not created_leader then
+            return {error = "Failed to create new leader record"}
+        end
+
+        -- 3. Delete the old leader record
+        local oldFormula = airtable.safeFormula("email", old_email_clean)
+        local oldData = airtable.list_records("Leaders", "Grid view", {filterByFormula = oldFormula})
+        if oldData and oldData.records and #oldData.records > 0 then
+            airtable.delete_record("Leaders", oldData.records[1].id)
+        end
+
+        -- 4. Check for the automation-generated form value
+        local form_value = nil
+        for i = 1, 5 do
+            os.execute("ping 127.0.0.1 -n 2 > nul")
+            local check = airtable.get_record("Leaders", created_leader.id)
+            if check and check.fields and check.fields["Update Leader Info Form"] then
+                form_value = check.fields["Update Leader Info Form"]
+                break
+            end
+        end
+
+        return {
+            success = true,
+            new_leader_id = created_leader.id,
+            update_leader_info_form = form_value
+        }
+    else 
+        return {error = "Unauthorized"}
+    end
+end)
+
 server:post("/leader", function(req)
     log.request(req:uri(), req:headers())
     if auth.checkWrite(req:headers().authorization) then

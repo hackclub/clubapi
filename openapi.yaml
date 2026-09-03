@@ -316,6 +316,69 @@ paths:
                     type: string
                     example: "Unauthorized"
 
+  /leader/change:
+    post:
+      summary: Change the club leader
+      description: Replaces the current club leader with a new one. Creates a new leader record, deletes the old one, and returns the generated Airtable automation form value. Requires Write permissions.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - in: query
+          name: club
+          schema:
+            type: string
+          required: true
+          description: Name of the club
+        - in: query
+          name: new_email
+          schema:
+            type: string
+            format: email
+          required: true
+          description: Email of the new leader
+        - in: query
+          name: old_email
+          schema:
+            type: string
+            format: email
+          required: true
+          description: Email of the old leader to be removed
+      responses:
+        '200':
+          description: Leader changed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  new_leader_id:
+                    type: string
+                  update_leader_info_form:
+                    type: string
+                    nullable: true
+        '400':
+          description: Missing parameter or entity not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Unauthorized"
+
   /leader/slack:
     get:
       summary: Get leader from Slack ID
