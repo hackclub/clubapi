@@ -11,7 +11,7 @@ if key then
 else 
     keyname = "None"
 end
-pprint("Request made to " ..uri .." With API Key: " ..keyname)
+print("Request made to " ..uri .." With API Key: " ..keyname)
 end
 
 

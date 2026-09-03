@@ -650,5 +650,5 @@ end)
 
 server.port = os.getenv("PORT")
 server.hostname = os.getenv("HOST")
-pprint("Server running on port " .. server.port .. " at " .. server.hostname)
+print("Server running on port " .. server.port .. " at " .. server.hostname)
 server:run()
