@@ -4,10 +4,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
     curl \
-    wget \
-    sudo
+    wget
 
-RUN curl -fsSL https://astra.arkforge.net/install.sh | bash -s -- -r luajit
+RUN curl -fsSL -o /usr/bin/astra https://github.com/ArkForgeLabs/Astra/releases/latest/download/astra-luajit-linux-amd64 \
+    && chmod +x /usr/bin/astra
 
 WORKDIR /app
 
