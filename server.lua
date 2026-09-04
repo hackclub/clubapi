@@ -29,6 +29,23 @@ local NOT_IMPLEMENTED = {
     error = "Not yet implemented — the Airtable field(s) this endpoint relied on were removed in a base migration and no replacement has been wired up yet"
 }
 
+local function notImplemented(res)
+    res:set_status_code(501)
+    return NOT_IMPLEMENTED
+end
+
+-- Distinguishes "no key sent" (legitimate anonymous access) from "a key was sent but it doesn't
+-- validate" (should be a hard 401, not a silent downgrade to the public response shape).
+local function keyProvided(req)
+    local h = req:headers().authorization
+    return h ~= nil and h ~= ""
+end
+
+local function unauthorized(res)
+    res:set_status_code(401)
+    return {error = "Unauthorized"}
+end
+
 
 -----------------
 -- GET RECORDS --
@@ -100,12 +117,12 @@ server:get("/clubs/level", function(req)
     return {clubs = airtable.count_records("Clubs", formula)}
 end)
 
-server:get("/club/code", function(req)
+server:get("/club/code", function(req, res)
     log.request(req:uri(), req:headers())
-    return NOT_IMPLEMENTED
+    return notImplemented(res)
 end)
 
-server:get("/club", function(req)
+server:get("/club", function(req, res)
     log.request(req:uri(), req:headers())
     local params = url.parse_query(req:uri())
     if params.name == nil then
@@ -118,6 +135,8 @@ server:get("/club", function(req)
             return {club_name = nil}
         end
         return club
+    elseif keyProvided(req) then
+        return unauthorized(res)
     else
         local fields = {"club_name", "status", "club_website", "leader_slack_id", "venue_addr_country"}
         local club = airtable.list_records("Clubs", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields}).records[1]
@@ -154,7 +173,7 @@ end)
 
 -- LEADER MANAGEMENT
 
-server:get("/leader", function(req)
+server:get("/leader", function(req, res)
     log.request(req:uri(), req:headers())
     local params = url.parse_query(req:uri())
     if params.email == nil then
@@ -176,6 +195,8 @@ server:get("/leader", function(req)
             return {club_name = nil, club_status = nil}
         end
         return {club_name = clubRecord.fields.club_name, club_status = clubRecord.fields.status}
+    elseif keyProvided(req) then
+        return unauthorized(res)
     else
         local leader = airtable.list_records("Leaders", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields})
         if leader.records[1] == nil then
@@ -186,7 +207,7 @@ server:get("/leader", function(req)
     end
 end)
 
-server:get("/leader/slack", function(req)
+server:get("/leader/slack", function(req, res)
     log.request(req:uri(), req:headers())
     local params = url.parse_query(req:uri())
     if params.slackid == nil then
@@ -208,6 +229,8 @@ server:get("/leader/slack", function(req)
             return {club_name = nil, club_status = nil}
         end
         return {club_name = clubRecord.fields.club_name, club_status = clubRecord.fields.status}
+    elseif keyProvided(req) then
+        return unauthorized(res)
     else
         local leader = airtable.list_records("Leaders", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields})
         if leader.records[1] == nil then
@@ -220,7 +243,7 @@ end)
 
 -- SHIP MANAGEMENT
 
-server:get("/ships", function(req)
+server:get("/ships", function(req, res)
     log.request(req:uri(), req:headers())
     local params = url.parse_query(req:uri())
     if params.club_name == nil then
@@ -244,6 +267,8 @@ server:get("/ships", function(req)
     if auth.checkRead(req:headers().authorization) then
         local ships = airtable.list_records("Unified DB Projects", nil, {filterByFormula = formula, timeZone = "America/New_York"}).records
         return ships
+    elseif keyProvided(req) then
+        return unauthorized(res)
     else
         local fields = {"YSWS", "Code URL", "Playable URL"}
         local ships = airtable.list_records("Unified DB Projects", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields}).records
@@ -253,7 +278,7 @@ end)
 
 -- MEMBER MANAGEMENT
 
-server:get("/member/ships", function(req)
+server:get("/member/ships", function(req, res)
     log.request(req:uri(), req:headers())
     if auth.checkRead(req:headers().authorization) then
         local params = url.parse_query(req:uri())
@@ -264,11 +289,11 @@ server:get("/member/ships", function(req)
         local ships = airtable.list_records("Unified DB Projects", nil, {filterByFormula = formula, timeZone = "America/New_York"}).records
         return ships
     else
-        return {error = "Unauthorized"}
+        return unauthorized(res)
     end
 end)
 
-server:get("/member", function(req)
+server:get("/member", function(req, res)
     log.request(req:uri(), req:headers())
     if auth.checkRead(req:headers().authorization) then
         local params = url.parse_query(req:uri())
@@ -286,16 +311,16 @@ server:get("/member", function(req)
         local email = member.fields.email
         return {name = name, email = email}
     else
-        return {error = "Unauthorized"}
+        return unauthorized(res)
     end
 end)
 
-server:get("/member/code", function(req)
+server:get("/member/code", function(req, res)
     log.request(req:uri(), req:headers())
-    return NOT_IMPLEMENTED
+    return notImplemented(res)
 end)
 
-server:get("/member/email", function(req)
+server:get("/member/email", function(req, res)
     log.request(req:uri(), req:headers())
     if auth.checkRead(req:headers().authorization) then
         local params = url.parse_query(req:uri())
@@ -311,11 +336,11 @@ server:get("/member/email", function(req)
         local clubName = member.fields["club_name (from rel_club)"]
         return clubName and clubName[1] or nil
     else
-        return {error = "Unauthorized"}
+        return unauthorized(res)
     end
 end)
 
-server:get("/member/slack", function(req)
+server:get("/member/slack", function(req, res)
     log.request(req:uri(), req:headers())
     if auth.checkRead(req:headers().authorization) then
         local params = url.parse_query(req:uri())
@@ -331,11 +356,11 @@ server:get("/member/slack", function(req)
         local clubName = member.fields["club_name (from rel_club)"]
         return clubName and clubName[1] or nil
     else
-        return {error = "Unauthorized"}
+        return unauthorized(res)
     end
 end)
 
-server:delete("/member", function(req)
+server:delete("/member", function(req, res)
     log.request(req:uri(), req:headers())
     if auth.checkWrite(req:headers().authorization) then
         local params = url.parse_query(req:uri())
@@ -354,11 +379,11 @@ server:delete("/member", function(req)
             return {error = "Failed to delete member"}
         end
     else
-        return {error = "Unauthorized"}
+        return unauthorized(res)
     end
 end)
 
-server:post("/member", function(req)
+server:post("/member", function(req, res)
     log.request(req:uri(), req:headers())
     if auth.checkWrite(req:headers().authorization) then
         local params = url.parse_query(req:uri())
@@ -387,17 +412,17 @@ server:post("/member", function(req)
             return {error = "Failed to update member"}
         end
     else
-        return {error = "Unauthorized"}
+        return unauthorized(res)
     end
 end)
 
-server:post("/member/create", function(req)
+server:post("/member/create", function(req, res)
     log.request(req:uri(), req:headers())
-    return NOT_IMPLEMENTED
+    return notImplemented(res)
 end)
 
 
-server:get("/members", function(req)
+server:get("/members", function(req, res)
     log.request(req:uri(), req:headers())
     if auth.checkRead(req:headers().authorization) then
         local params = url.parse_query(req:uri())
@@ -423,7 +448,7 @@ server:get("/members", function(req)
         end
         return {members = memberNames}
     else
-        return {error = "Unauthorized"}
+        return unauthorized(res)
     end
 end)
 
@@ -459,14 +484,14 @@ server:get("/status", function(req)
     return {status = status.fields.status}
 end)
 
-server:get("/suspension", function(req)
+server:get("/suspension", function(req, res)
     log.request(req:uri(), req:headers())
-    return NOT_IMPLEMENTED
+    return notImplemented(res)
 end)
 
-server:get("/tokens", function(req)
+server:get("/tokens", function(req, res)
     log.request(req:uri(), req:headers())
-    return NOT_IMPLEMENTED
+    return notImplemented(res)
 end)
 
 ------------------
@@ -475,7 +500,7 @@ end)
 
 -- LEADER MANAGEMENT
 
-server:post("/leader", function(req)
+server:post("/leader", function(req, res)
     log.request(req:uri(), req:headers())
     if auth.checkWrite(req:headers().authorization) then
         local params = url.parse_query(req:uri())
@@ -493,11 +518,11 @@ server:post("/leader", function(req)
         local updateLeader = airtable.update_record("Leaders", id, {contact_email = url.strip_quotes(new_email)})
         return {new_email = updateLeader.fields.contact_email}
     else
-        return {error = "Unauthorized"}
+        return unauthorized(res)
     end
 end)
 
-server:post("/leader/change", function(req)
+server:post("/leader/change", function(req, res)
     log.request(req:uri(), req:headers())
     if auth.checkWrite(req:headers().authorization) then
         local params = url.parse_query(req:uri())
@@ -545,13 +570,13 @@ server:post("/leader/change", function(req)
             new_leader_id = created_leader.id
         }
     else
-        return {error = "Unauthorized"}
+        return unauthorized(res)
     end
 end)
 
 -- LEVEL/STATUS MANAGEMENT
 
-server:post("/status", function(req)
+server:post("/status", function(req, res)
     log.request(req:uri(), req:headers())
     if auth.checkWrite(req:headers().authorization) then
         local params = url.parse_query(req:uri())
@@ -569,11 +594,11 @@ server:post("/status", function(req)
         local updateClub = airtable.update_record("Clubs", id, {status = url.strip_quotes(status)})
         return {new_status = updateClub.fields.status}
     else
-        return {error = "Unauthorized"}
+        return unauthorized(res)
     end
 end)
 
-server:post("/level", function(req)
+server:post("/level", function(req, res)
     log.request(req:uri(), req:headers())
     if auth.checkWrite(req:headers().authorization) then
         local params = url.parse_query(req:uri())
@@ -591,30 +616,30 @@ server:post("/level", function(req)
         local updateClub = airtable.update_record("Clubs", id, {level = url.strip_quotes(level)})
         return {new_level = updateClub.fields.level}
     else
-        return {error = "Unauthorized"}
+        return unauthorized(res)
     end
 end)
 
-server:post("/suspension", function(req)
+server:post("/suspension", function(req, res)
     log.request(req:uri(), req:headers())
-    return NOT_IMPLEMENTED
+    return notImplemented(res)
 end)
 
-server:post("/tokens", function(req)
+server:post("/tokens", function(req, res)
     log.request(req:uri(), req:headers())
-    return NOT_IMPLEMENTED
+    return notImplemented(res)
 end)
 
 -- ANNOUNCEMENT MANAGEMENT
 
-server:post("/announce", function(req)
+server:post("/announce", function(req, res)
     log.request(req:uri(), req:headers())
-    return NOT_IMPLEMENTED
+    return notImplemented(res)
 end)
 
 -- API KEY MANAGEMENT
 
-server:post("/key/create", function(req)
+server:post("/key/create", function(req, res)
     log.request(req:uri(), req:headers())
     if auth.checkAdmin(req:headers().authorization) then
         local params = url.parse_query(req:uri())
@@ -630,7 +655,7 @@ server:post("/key/create", function(req)
             return {success = false, error = err or "Failed to create key"}
         end
     else
-        return {error = "Unauthorized"}
+        return unauthorized(res)
     end
 end)
 
