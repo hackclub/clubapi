@@ -155,7 +155,7 @@ paths:
           description: Name of the club
       responses:
         '200':
-          description: Club information. Shape depends on whether a valid API key was sent (see description). `{club_name: null}` if no club matches.
+          description: "Club information. Shape depends on whether a valid API key was sent (see description). `{club_name: null}` if no club matches."
           content:
             application/json:
               schema:

@@ -129,11 +129,6 @@ server:get("/clubs/level", function(req)
     return {clubs = airtable.count_records("Clubs", formula)}
 end)
 
-server:get("/club/code", function(req, res)
-    log.request(req:uri(), req:headers())
-    return notImplemented(res)
-end)
-
 server:get("/club", function(req, res)
     log.request(req:uri(), req:headers())
     local params = url.parse_query(req:uri())
