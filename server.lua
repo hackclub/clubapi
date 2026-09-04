@@ -46,6 +46,9 @@ local function unauthorized(res)
     return {error = "Unauthorized"}
 end
 
+local CLUBS_MAP_CACHE_TTL_SECONDS = 45
+local clubsMapCache = { data = nil, expiresAt = 0 }
+
 
 -----------------
 -- GET RECORDS --
@@ -66,6 +69,12 @@ end)
 server:get("/clubs/map", function(req, res)
     log.request(req:uri(), req:headers())
     res:set_header("Access-Control-Allow-Origin", "*")
+
+    local now = os.time()
+    if clubsMapCache.data and now < clubsMapCache.expiresAt then
+        return clubsMapCache.data
+    end
+
     local fields = {"club_name", "venue_lat", "venue_lng", "status", "club_website"}
     local result = {}
     local offset = nil
@@ -92,6 +101,9 @@ server:get("/clubs/map", function(req, res)
             offset = nil
         end
     until not offset
+
+    clubsMapCache.data = result
+    clubsMapCache.expiresAt = now + CLUBS_MAP_CACHE_TTL_SECONDS
     return result
 end)
 
