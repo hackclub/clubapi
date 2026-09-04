@@ -1,30 +1,10 @@
 local driver = require("database")
-local fs = require("fs")
 
 local auth = {}
 
 local VALID_PERMS = { read = true, write = true, admin = true }
 
 local db = nil
-
-local function generateApiKey()
-    local ok, buffer = pcall(function()
-        local file = fs.open("/dev/urandom")
-        local buf = fs.new_buffer(32)
-        file:read_exact(buf)
-        return buf
-    end)
-    if not ok or not buffer then
-        return nil
-    end
-
-    local bytes = buffer:bytes()
-    local hexParts = {}
-    for i = 1, #bytes do
-        hexParts[i] = string.format("%02x", bytes[i])
-    end
-    return table.concat(hexParts)
-end
 
 local function getDb()
     if db then
@@ -102,18 +82,15 @@ function auth.createKey(name, perms)
         return nil, "no_database_connection"
     end
 
-    local key = generateApiKey()
-    if not key then
-        return nil, "key_generation_failed"
-    end
-
     local ok, row = pcall(function()
         return conn:query_one(
-            "INSERT INTO api_keys (key, name, perms) VALUES ($1, $2, $3) RETURNING key, name, perms",
-            { key, name, perms }
+            "INSERT INTO api_keys (key, name, perms) " ..
+            "VALUES (replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', ''), $1, $2) " ..
+            "RETURNING key, name, perms",
+            { name, perms }
         )
     end)
-    if not ok or type(row) ~= "table" then
+    if not ok or type(row) ~= "table" or type(row.key) ~= "string" or row.key == "" then
         return nil, "insert_failed"
     end
 
