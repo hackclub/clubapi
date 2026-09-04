@@ -671,17 +671,21 @@ server:post("/key/create", function(req, res)
     end
 end)
 
-server:post("/key/revoke", function(req)
+server:post("/key/revoke", function(req, res)
     log.request(req:uri(), req:headers())
-    local params = url.parse_query(req:uri())
-    if params.key == nil then
-        return {success = false}
-    end
-    local revoked = auth.revokeKey(url.strip_quotes(params.key))
-    if revoked then
-        return {success = true, owner_email = revoked.name or ""}
+    if auth.checkAdmin(req:headers().authorization) then
+        local params = url.parse_query(req:uri())
+        if params.key == nil then
+            return {success = false}
+        end
+        local revoked = auth.revokeKey(url.strip_quotes(params.key))
+        if revoked then
+            return {success = true, owner_email = revoked.name or ""}
+        else
+            return {success = false}
+        end
     else
-        return {success = false}
+        return unauthorized(res)
     end
 end)
 

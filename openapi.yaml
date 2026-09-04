@@ -12,6 +12,13 @@ components:
       type: apiKey
       in: header
       name: Authorization
+  schemas:
+    NotImplemented:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "Not yet implemented — the Airtable field(s) this endpoint relied on were removed in a base migration and no replacement has been wired up yet"
 security:
   - {}
   - ApiKeyAuth: []
@@ -47,6 +54,42 @@ paths:
                 properties:
                   totalClubs:
                     type: integer
+
+  /clubs/map:
+    get:
+      summary: Get all clubs for map display
+      description: |
+        Returns every club with fuzzed coordinates for map display.
+        Fully public, no authentication supported or required.
+        Responses are cached server-side for up to 45 seconds.
+      security: []
+      responses:
+        '200':
+          description: List of clubs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    fields:
+                      type: object
+                      properties:
+                        club_name:
+                          type: string
+                        venue_lat_fuzz:
+                          type: number
+                          description: Latitude rounded to ~2 decimal places
+                        venue_lng_fuzz:
+                          type: number
+                          description: Longitude rounded to ~2 decimal places
+                        club_status:
+                          type: string
+                        club_website:
+                          type: string
 
   /clubs/country:
     get:
@@ -99,7 +142,10 @@ paths:
       summary: Get club info from name
       description: |
         Returns information about a club.
-        Authentication is optional. Authenticated requests return more fields.
+        Authentication is optional.
+        - No key sent: returns a limited public field set (club_name, status, club_website, leader_slack_id, venue_addr_country).
+        - Valid key sent: returns the full Airtable club record.
+        - Invalid key sent: 401.
       parameters:
         - in: query
           name: name
@@ -109,54 +155,18 @@ paths:
           description: Name of the club
       responses:
         '200':
-          description: Club information
+          description: Club information. Shape depends on whether a valid API key was sent (see description). `{club_name: null}` if no club matches.
           content:
             application/json:
               schema:
                 type: object
+                additionalProperties: true
                 properties:
                   club_name:
                     type: string
                     nullable: true
-                  'Est. # of Attendees':
-                    type: integer
-                  call_meeting_days:
-                    type: string
-                  call_meeting_length:
-                    type: number
-                  club_status:
-                    type: string
-                  id:
-                    type: string
-                  leader_slack_id:
-                    type: string
-                  level:
-                    type: string
-                  venue_address_country:
-                    type: string
-
-  /club/code:
-    get:
-      summary: Get club info from join code
-      description: Returns information about a club by its join code. Requires Read permissions.
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - in: query
-          name: code
-          schema:
-            type: string
-          required: true
-          description: Join code of the club
-      responses:
-        '200':
-          description: Club information
-          content:
-            application/json:
-              schema:
-                type: object
         '400':
-          description: Missing code parameter
+          description: Missing name parameter
           content:
             application/json:
               schema:
@@ -164,9 +174,9 @@ paths:
                 properties:
                   error:
                     type: string
-                    example: "Missing code parameter"
+                    example: "Missing name parameter"
         '401':
-          description: Unauthorized
+          description: An API key was sent but it is invalid
           content:
             application/json:
               schema:
@@ -175,16 +185,21 @@ paths:
                   error:
                     type: string
                     example: "Unauthorized"
-        '404':
-          description: Club not found
+
+  /club/code:
+    get:
+      summary: Get club info from join code
+      description: |
+        Not yet implemented — always returns 501. The Airtable field(s) this endpoint
+        relied on were removed in a base migration and no replacement has been wired up yet.
+      security: []
+      responses:
+        '501':
+          description: Not yet implemented
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: "Club not found"
+                $ref: '#/components/schemas/NotImplemented'
 
   /club/ambassador:
     get:
@@ -239,9 +254,10 @@ paths:
       summary: Get leader from email
       description: |
         Checks if a leader exists by email.
-        Authentication is optional. 
-        - Authenticated: Returns the club name associated with the leader.
-        - Unauthenticated: Returns true/false indicating existence.
+        Authentication is optional.
+        - No key sent: returns true/false indicating existence.
+        - Valid key sent: returns the club name and status associated with the leader.
+        - Invalid key sent: 401.
       parameters:
         - in: query
           name: email
@@ -262,10 +278,23 @@ paths:
                       club_name:
                         type: string
                         nullable: true
+                      club_status:
+                        type: string
+                        nullable: true
                   - type: object
                     properties:
                       leader:
                         type: boolean
+        '401':
+          description: An API key was sent but it is invalid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Unauthorized"
     post:
       summary: Change club leader's email
       description: Updates a leader's email address. Requires Write permissions.
@@ -321,9 +350,10 @@ paths:
       summary: Get leader from Slack ID
       description: |
         Checks if a leader exists by Slack ID.
-        Authentication is optional. 
-        - Authenticated: Returns the club name associated with the leader.
-        - Unauthenticated: Returns true/false indicating existence.
+        Authentication is optional.
+        - No key sent: returns true/false indicating existence.
+        - Valid key sent: returns the club name and status associated with the leader.
+        - Invalid key sent: 401.
       parameters:
         - in: query
           name: slackid
@@ -345,10 +375,31 @@ paths:
                         nullable: true
                       club_status:
                         type: string
+                        nullable: true
                   - type: object
                     properties:
                       leader:
                         type: boolean
+        '400':
+          description: Missing slackid parameter
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Missing slackid parameter"
+        '401':
+          description: An API key was sent but it is invalid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Unauthorized"
 
   ###################
   # SHIP MANAGEMENT
@@ -357,8 +408,11 @@ paths:
     get:
       summary: Get club ships
       description: |
-        Returns the list of ships (projects) associated with a club.
-        Authentication is optional. Authenticated requests return more fields.
+        Returns the list of ships (projects) associated with every member of a club.
+        Authentication is optional.
+        - No key sent: returns a limited field set per ship (YSWS, Code URL, Playable URL).
+        - Valid key sent: returns the full Unified DB Projects record per ship.
+        - Invalid key sent: 401.
       parameters:
         - in: query
           name: club_name
@@ -368,6 +422,53 @@ paths:
           description: Name of the club
       responses:
         '200':
+          description: List of ships. Shape per item depends on whether a valid API key was sent (see description).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+        '400':
+          description: Missing club_name parameter, or club member lookup failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '401':
+          description: An API key was sent but it is invalid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Unauthorized"
+
+  ###################
+  # MEMBER MANAGEMENT
+  ###################
+  /member/ships:
+    get:
+      summary: Get a member's ships
+      description: Returns the list of ships (projects) associated with a member by email. Requires Read permissions.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - in: query
+          name: email
+          schema:
+            type: string
+            format: email
+          required: true
+          description: Email of the member
+      responses:
+        '200':
           description: List of ships
           content:
             application/json:
@@ -375,25 +476,28 @@ paths:
                 type: array
                 items:
                   type: object
-                  properties:
-                    workshop:
-                      type: string
-                    Rating:
-                      type: number
-                    code_url:
-                      type: string
-                    'club_name (from Clubs)':
-                      type: array
-                      items:
-                        type: string
-                    'YSWS–Name (from Unified YSWS Database)':
-                      type: array
-                      items:
-                        type: string
+                  additionalProperties: true
+        '400':
+          description: Missing email parameter
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Missing email parameter"
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Unauthorized"
 
-  ###################
-  # MEMBER MANAGEMENT
-  ###################
   /member:
     get:
       summary: Get member's club and email by name
@@ -565,63 +669,17 @@ paths:
   /member/code:
     get:
       summary: Get member info by leave code
-      description: Returns member information by their leave code. Requires Read permissions.
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - in: query
-          name: code
-          schema:
-            type: string
-          required: true
-          description: Leave code of the member
+      description: |
+        Not yet implemented — always returns 501. The Airtable field(s) this endpoint
+        relied on were removed in a base migration and no replacement has been wired up yet.
+      security: []
       responses:
-        '200':
-          description: Member information
+        '501':
+          description: Not yet implemented
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  name:
-                    type: string
-                  club_name:
-                    type: array
-                    items:
-                      type: string
-                  email:
-                    type: string
-                    format: email
-        '400':
-          description: Missing code parameter
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: "Missing code parameter"
-        '401':
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: "Unauthorized"
-        '404':
-          description: Member not found
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: "Member not found"
+                $ref: '#/components/schemas/NotImplemented'
 
   /member/email:
     get:
@@ -729,64 +787,17 @@ paths:
   /member/create:
     post:
       summary: Create a new member
-      description: Creates a new member with the specified name, email, and join code. Requires Write permissions.
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - in: query
-          name: name
-          schema:
-            type: string
-          required: true
-          description: Name of the new member
-        - in: query
-          name: email
-          schema:
-            type: string
-            format: email
-          required: true
-          description: Email of the new member
-        - in: query
-          name: join_code
-          schema:
-            type: string
-          required: true
-          description: Join code of the club to associate the member with
+      description: |
+        Not yet implemented — always returns 501. The Airtable field(s) this endpoint
+        relied on were removed in a base migration and no replacement has been wired up yet.
+      security: []
       responses:
-        '200':
-          description: Member created successfully
+        '501':
+          description: Not yet implemented
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  id:
-                    type: string
-                  name:
-                    type: string
-                  email:
-                    type: string
-                    format: email
-        '400':
-          description: Missing required parameters or failed to create
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: "Missing required parameters (name, email, join_code)"
-        '401':
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: "Unauthorized"
+                $ref: '#/components/schemas/NotImplemented'
 
   /members:
     get:
@@ -980,209 +991,58 @@ paths:
   /suspension:
     get:
       summary: Get club suspension status
-      description: Returns the suspension status of the specified club. Requires Read permissions.
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - in: query
-          name: club_name
-          schema:
-            type: string
-          required: true
-          description: Name of the club
-          example: "Example Club"
+      description: |
+        Not yet implemented — always returns 501. The Airtable field(s) this endpoint
+        relied on were removed in a base migration and no replacement has been wired up yet.
+      security: []
       responses:
-        '200':
-          description: Club suspension status
+        '501':
+          description: Not yet implemented
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  club_name:
-                    type: string
-                    example: "Example Club"
-                  suspended:
-                    type: boolean
-                    example: false
-        '400':
-          description: Missing parameters or club not found
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: "Missing club_name parameter"
-        '401':
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: "Unauthorized"
+                $ref: '#/components/schemas/NotImplemented'
     post:
       summary: Update club suspension status
-      description: Updates the suspension status of a club (checkbox field). Requires Write permissions.
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - in: query
-          name: club_name
-          schema:
-            type: string
-          required: true
-          description: Name of the club
-          example: "Example Club"
-        - in: query
-          name: suspended
-          schema:
-            type: string
-            enum: ["true", "false"]
-          required: true
-          description: Suspension status (true or false)
-          example: "true"
+      description: |
+        Not yet implemented — always returns 501. The Airtable field(s) this endpoint
+        relied on were removed in a base migration and no replacement has been wired up yet.
+      security: []
       responses:
-        '200':
-          description: Suspension status updated successfully
+        '501':
+          description: Not yet implemented
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  club_name:
-                    type: string
-                    example: "Example Club"
-                  suspended:
-                    type: boolean
-                    example: true
-        '400':
-          description: Missing parameters or club not found
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: "Missing parameters (club_name, suspended)"
-        '401':
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: "Unauthorized"
+                $ref: '#/components/schemas/NotImplemented'
 
   /tokens:
     get:
       summary: Get club tokens
-      description: Returns the token count for the specified club. Requires Read permissions.
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - in: query
-          name: club_name
-          schema:
-            type: string
-          required: true
-          description: Name of the club
-          example: "Example Club"
+      description: |
+        Not yet implemented — always returns 501. The Airtable field(s) this endpoint
+        relied on were removed in a base migration and no replacement has been wired up yet.
+      security: []
       responses:
-        '200':
-          description: Club token count
+        '501':
+          description: Not yet implemented
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  club_name:
-                    type: string
-                    example: "Example Club"
-                  tokens:
-                    type: integer
-                    example: 100
-        '400':
-          description: Missing parameters or club not found
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: "Missing club_name parameter"
-        '401':
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: "Unauthorized"
+                $ref: '#/components/schemas/NotImplemented'
     post:
       summary: Update club tokens
-      description: Updates the token count for a club. Requires Write permissions.
-      security:
-        - ApiKeyAuth: []
-      parameters:
-        - in: query
-          name: club_name
-          schema:
-            type: string
-          required: true
-          description: Name of the club
-          example: "Example Club"
-        - in: query
-          name: tokens
-          schema:
-            type: integer
-          required: true
-          description: New token count (must be a number)
-          example: 150
+      description: |
+        Not yet implemented — always returns 501. The Airtable field(s) this endpoint
+        relied on were removed in a base migration and no replacement has been wired up yet.
+      security: []
       responses:
-        '200':
-          description: Tokens updated successfully
+        '501':
+          description: Not yet implemented
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  club_name:
-                    type: string
-                    example: "Example Club"
-                  tokens:
-                    type: integer
-                    example: 150
-        '400':
-          description: Missing parameters, invalid tokens value, or club not found
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: "Invalid tokens value, must be a number"
-        '401':
-          description: Unauthorized
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: "Unauthorized"
+                $ref: '#/components/schemas/NotImplemented'
 
   ###################
   # ANNOUNCEMENT MANAGEMENT
@@ -1190,25 +1050,44 @@ paths:
   /announce:
     post:
       summary: Send announcement to club members
-      description: Sets the announcement message and triggers sending to all members of a club. Requires Write permissions.
+      description: |
+        Not yet implemented — always returns 501. The Airtable field(s) this endpoint
+        relied on were removed in a base migration and no replacement has been wired up yet.
+      security: []
+      responses:
+        '501':
+          description: Not yet implemented
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotImplemented'
+
+  ###################
+  # API KEY MANAGEMENT
+  ###################
+  /key/create:
+    post:
+      summary: Create a new API key
+      description: Creates a new API key with the given name and permission level. Requires Admin permissions.
       security:
         - ApiKeyAuth: []
       parameters:
         - in: query
-          name: club
+          name: name
           schema:
             type: string
           required: true
-          description: Name of the club
+          description: Label for the new key (e.g. the owner's name)
         - in: query
-          name: message
+          name: perms
           schema:
             type: string
+            enum: ["read", "write", "admin"]
           required: true
-          description: Announcement message to send
+          description: Permission level for the new key
       responses:
         '200':
-          description: Announcement sent successfully
+          description: Key created, or creation failed (see success field)
           content:
             application/json:
               schema:
@@ -1216,17 +1095,49 @@ paths:
                 properties:
                   success:
                     type: boolean
-                    example: true
-                  membersUpdated:
-                    type: integer
-        '400':
-          description: Missing parameters or no members found
+                  key:
+                    type: string
+                  name:
+                    type: string
+                  perms:
+                    type: string
+                  error:
+                    type: string
+        '401':
+          description: Unauthorized
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   error:
+                    type: string
+                    example: "Unauthorized"
+
+  /key/revoke:
+    post:
+      summary: Revoke an API key
+      description: Deletes an API key. Requires Admin permissions.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - in: query
+          name: key
+          schema:
+            type: string
+          required: true
+          description: The API key value to revoke
+      responses:
+        '200':
+          description: Revocation result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  owner_email:
                     type: string
         '401':
           description: Unauthorized
