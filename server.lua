@@ -322,11 +322,6 @@ server:get("/member", function(req, res)
     end
 end)
 
-server:get("/member/code", function(req, res)
-    log.request(req:uri(), req:headers())
-    return notImplemented(res)
-end)
-
 server:get("/member/email", function(req, res)
     log.request(req:uri(), req:headers())
     if auth.checkRead(req:headers().authorization) then
@@ -491,14 +486,19 @@ server:get("/status", function(req)
     return {status = status.fields.status}
 end)
 
-server:get("/suspension", function(req, res)
+server:get("/dormant", function(req)
     log.request(req:uri(), req:headers())
-    return notImplemented(res)
-end)
-
-server:get("/tokens", function(req, res)
-    log.request(req:uri(), req:headers())
-    return notImplemented(res)
+    local params = url.parse_query(req:uri())
+    if params.club_name == nil then
+        return {error = "Missing club_name parameter"}
+    end
+    local formula = airtable.safeFormula("club_name", params.club_name)
+    local fields = {"status"}
+    local club = airtable.list_records("Clubs", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields}).records[1]
+    if club == nil then
+        return {error = "Club not found"}
+    end
+    return {club_name = url.strip_quotes(params.club_name), dormant = club.fields.status == "Dormant"}
 end)
 
 ------------------
@@ -627,21 +627,30 @@ server:post("/level", function(req, res)
     end
 end)
 
-server:post("/suspension", function(req, res)
+server:post("/dormant", function(req, res)
     log.request(req:uri(), req:headers())
-    return notImplemented(res)
-end)
-
-server:post("/tokens", function(req, res)
-    log.request(req:uri(), req:headers())
-    return notImplemented(res)
-end)
-
--- ANNOUNCEMENT MANAGEMENT
-
-server:post("/announce", function(req, res)
-    log.request(req:uri(), req:headers())
-    return notImplemented(res)
+    if auth.checkWrite(req:headers().authorization) then
+        local params = url.parse_query(req:uri())
+        local club_name = params.club_name
+        local dormant = params.dormant
+        if club_name == nil or dormant == nil then
+            return {error = "Missing parameters (club_name, dormant)"}
+        end
+        local dormantClean = url.strip_quotes(dormant)
+        if dormantClean ~= "true" and dormantClean ~= "false" then
+            return {error = "Invalid dormant value, must be true or false"}
+        end
+        local formula = airtable.safeFormula("club_name", club_name)
+        local club = airtable.list_records("Clubs", nil, {filterByFormula = formula}).records[1]
+        if club == nil then
+            return {error = "Club not found"}
+        end
+        local newStatus = dormantClean == "true" and "Dormant" or "Active"
+        local updateClub = airtable.update_record("Clubs", club.id, {status = newStatus})
+        return {club_name = url.strip_quotes(club_name), dormant = updateClub.fields.status == "Dormant"}
+    else
+        return unauthorized(res)
+    end
 end)
 
 -- API KEY MANAGEMENT

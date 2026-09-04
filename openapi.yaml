@@ -12,13 +12,6 @@ components:
       type: apiKey
       in: header
       name: Authorization
-  schemas:
-    NotImplemented:
-      type: object
-      properties:
-        error:
-          type: string
-          example: "Not yet implemented — the Airtable field(s) this endpoint relied on were removed in a base migration and no replacement has been wired up yet"
 security:
   - {}
   - ApiKeyAuth: []
@@ -185,21 +178,6 @@ paths:
                   error:
                     type: string
                     example: "Unauthorized"
-
-  /club/code:
-    get:
-      summary: Get club info from join code
-      description: |
-        Not yet implemented — always returns 501. The Airtable field(s) this endpoint
-        relied on were removed in a base migration and no replacement has been wired up yet.
-      security: []
-      responses:
-        '501':
-          description: Not yet implemented
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/NotImplemented'
 
   /club/ambassador:
     get:
@@ -392,6 +370,69 @@ paths:
                     example: "Missing slackid parameter"
         '401':
           description: An API key was sent but it is invalid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Unauthorized"
+
+  /leader/change:
+    post:
+      summary: Replace a club's leader
+      description: |
+        Creates a new leader record linked to the club and clears the old leader's
+        club link (the old leader record itself is not deleted). Requires Write permissions.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - in: query
+          name: club
+          schema:
+            type: string
+          required: true
+          description: Name of the club
+        - in: query
+          name: new_email
+          schema:
+            type: string
+            format: email
+          required: true
+          description: Email for the new leader
+        - in: query
+          name: old_email
+          schema:
+            type: string
+            format: email
+          required: true
+          description: Email of the leader being replaced
+      responses:
+        '200':
+          description: Leader replaced successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  new_leader_id:
+                    type: string
+        '400':
+          description: Missing parameters, club not found, or failed to create the new leader record
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Missing parameters (club, new_email, old_email)"
+        '401':
+          description: Unauthorized
           content:
             application/json:
               schema:
@@ -666,21 +707,6 @@ paths:
                     type: string
                     example: "Member not found"
 
-  /member/code:
-    get:
-      summary: Get member info by leave code
-      description: |
-        Not yet implemented — always returns 501. The Airtable field(s) this endpoint
-        relied on were removed in a base migration and no replacement has been wired up yet.
-      security: []
-      responses:
-        '501':
-          description: Not yet implemented
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/NotImplemented'
-
   /member/email:
     get:
       summary: Get member's club by email
@@ -783,21 +809,6 @@ paths:
                   error:
                     type: string
                     example: "Member not found"
-
-  /member/create:
-    post:
-      summary: Create a new member
-      description: |
-        Not yet implemented — always returns 501. The Airtable field(s) this endpoint
-        relied on were removed in a base migration and no replacement has been wired up yet.
-      security: []
-      responses:
-        '501':
-          description: Not yet implemented
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/NotImplemented'
 
   /members:
     get:
@@ -988,79 +999,98 @@ paths:
                     type: string
                     example: "Unauthorized"
 
-  /suspension:
+  /dormant:
     get:
-      summary: Get club suspension status
-      description: |
-        Not yet implemented — always returns 501. The Airtable field(s) this endpoint
-        relied on were removed in a base migration and no replacement has been wired up yet.
+      summary: Get club dormant status
+      description: Returns whether the specified club's status is currently "Dormant".
       security: []
+      parameters:
+        - in: query
+          name: club_name
+          schema:
+            type: string
+          required: true
+          description: Name of the club
+          example: "Example Club"
       responses:
-        '501':
-          description: Not yet implemented
+        '200':
+          description: Club dormant status
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/NotImplemented'
+                type: object
+                properties:
+                  club_name:
+                    type: string
+                    example: "Example Club"
+                  dormant:
+                    type: boolean
+                    example: false
+        '400':
+          description: Missing club_name parameter or club not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Missing club_name parameter"
     post:
-      summary: Update club suspension status
-      description: |
-        Not yet implemented — always returns 501. The Airtable field(s) this endpoint
-        relied on were removed in a base migration and no replacement has been wired up yet.
-      security: []
+      summary: Update club dormant status
+      description: Sets a club's status to "Dormant" (dormant=true) or "Active" (dormant=false). Requires Write permissions.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - in: query
+          name: club_name
+          schema:
+            type: string
+          required: true
+          description: Name of the club
+          example: "Example Club"
+        - in: query
+          name: dormant
+          schema:
+            type: string
+            enum: ["true", "false"]
+          required: true
+          description: Dormant status (true or false)
+          example: "true"
       responses:
-        '501':
-          description: Not yet implemented
+        '200':
+          description: Dormant status updated successfully
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/NotImplemented'
-
-  /tokens:
-    get:
-      summary: Get club tokens
-      description: |
-        Not yet implemented — always returns 501. The Airtable field(s) this endpoint
-        relied on were removed in a base migration and no replacement has been wired up yet.
-      security: []
-      responses:
-        '501':
-          description: Not yet implemented
+                type: object
+                properties:
+                  club_name:
+                    type: string
+                    example: "Example Club"
+                  dormant:
+                    type: boolean
+                    example: true
+        '400':
+          description: Missing parameters, invalid dormant value, or club not found
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/NotImplemented'
-    post:
-      summary: Update club tokens
-      description: |
-        Not yet implemented — always returns 501. The Airtable field(s) this endpoint
-        relied on were removed in a base migration and no replacement has been wired up yet.
-      security: []
-      responses:
-        '501':
-          description: Not yet implemented
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Missing parameters (club_name, dormant)"
+        '401':
+          description: Unauthorized
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/NotImplemented'
-
-  ###################
-  # ANNOUNCEMENT MANAGEMENT
-  ###################
-  /announce:
-    post:
-      summary: Send announcement to club members
-      description: |
-        Not yet implemented — always returns 501. The Airtable field(s) this endpoint
-        relied on were removed in a base migration and no replacement has been wired up yet.
-      security: []
-      responses:
-        '501':
-          description: Not yet implemented
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/NotImplemented'
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Unauthorized"
 
   ###################
   # API KEY MANAGEMENT
