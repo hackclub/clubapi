@@ -49,6 +49,84 @@ end
 local CLUBS_MAP_CACHE_TTL_SECONDS = 45
 local clubsMapCache = { data = nil, expiresAt = 0 }
 
+local RATE_LIMIT_WINDOW_SECONDS = 60
+local RATE_LIMIT_MAX_REQUESTS = 10
+local RATE_LIMIT_NEAR_LIMIT_REQUESTS = 8
+local RATE_LIMIT_STRIKE_THRESHOLD = 3
+local RATE_LIMIT_BLOCK_SECONDS = 600
+local rateLimitState = {}
+
+local function clientIp(req)
+    local headers = req:headers()
+    if headers["cf-connecting-ip"] and headers["cf-connecting-ip"] ~= "" then
+        return headers["cf-connecting-ip"]
+    end
+    local forwarded = headers["x-forwarded-for"]
+    if forwarded and forwarded ~= "" then
+        local first = forwarded:match("^%s*([^,]+)")
+        if first then
+            return first
+        end
+    end
+    local ipAddr = req:ip_address()
+    return ipAddr and ipAddr.address or "unknown"
+end
+
+local function isRateLimited(ip)
+    local now = os.time()
+    local entry = rateLimitState[ip]
+
+    if entry and entry.blockedUntil and now < entry.blockedUntil then
+        return true
+    end
+
+    if not entry or now - entry.windowStart >= RATE_LIMIT_WINDOW_SECONDS then
+        local strikes = entry and entry.strikes or 0
+        if entry and entry.count >= RATE_LIMIT_NEAR_LIMIT_REQUESTS then
+            strikes = strikes + 1
+        else
+            strikes = 0
+        end
+        local blockedUntil = nil
+        if strikes >= RATE_LIMIT_STRIKE_THRESHOLD then
+            blockedUntil = now + RATE_LIMIT_BLOCK_SECONDS
+        end
+        rateLimitState[ip] = { windowStart = now, count = 1, strikes = strikes, blockedUntil = blockedUntil }
+        return blockedUntil ~= nil
+    end
+
+    entry.count = entry.count + 1
+    return entry.count > RATE_LIMIT_MAX_REQUESTS
+end
+
+local function rateLimited(handler)
+    return function(req, res)
+        if not auth.checkRead(req:headers().authorization) then
+            if isRateLimited(clientIp(req)) then
+                res:set_status_code(429)
+                return {error = "Too many requests"}
+            end
+        end
+        return handler(req, res)
+    end
+end
+
+local rawGet = server.get
+local rawPost = server.post
+local rawDelete = server.delete
+
+function server:get(path, callback, config)
+    return rawGet(self, path, rateLimited(callback), config)
+end
+
+function server:post(path, callback, config)
+    return rawPost(self, path, rateLimited(callback), config)
+end
+
+function server:delete(path, callback, config)
+    return rawDelete(self, path, rateLimited(callback), config)
+end
+
 
 -----------------
 -- GET RECORDS --
@@ -337,6 +415,25 @@ server:get("/member/email", function(req, res)
         end
         local clubName = member.fields["club_name (from rel_club)"]
         return clubName and clubName[1] or nil
+    else
+        return unauthorized(res)
+    end
+end)
+
+server:get("/member/name", function(req, res)
+    log.request(req:uri(), req:headers())
+    if auth.checkRead(req:headers().authorization) then
+        local params = url.parse_query(req:uri())
+        if params.email == nil then
+            return {error = "Missing email parameter"}
+        end
+        local formula = airtable.safeFormula("email", params.email)
+        local fields = {"name"}
+        local member = airtable.list_records("Members", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields}).records[1]
+        if member == nil then
+            return {error = "Member not found"}
+        end
+        return {name = member.fields.name}
     else
         return unauthorized(res)
     end
