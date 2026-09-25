@@ -5,7 +5,7 @@ API For interacting with clubs data. Written in Lua using the [Astra](https://as
 
 API Documentation: https://clubapi.hackclub.com
 
-If you need a API key for a Hack Club sponsored project, email ivie@hackclub.com or dm [@Charmunk](https://hackclub.enterprise.slack.com/team/U07UV4R2G4T) on the [Hack Club Slack](https://hackclub.com/slack/)
+If you need a API key for a Hack Club sponsored project, email wally@hackclub.com or dm [@wbs](https://hackclub.enterprise.slack.com/team/U09AYT4B1JB) on the [Hack Club Slack](https://hackclub.com/slack/)
 
 ## Setup
 
