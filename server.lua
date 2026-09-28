@@ -326,6 +326,33 @@ server:get("/leader/slack", function(req, res)
     end
 end)
 
+server:get("/leader/name", function(req, res)
+    log.request(req:uri(), req:headers())
+    if auth.checkRead(req:headers().authorization) then
+        local params = url.parse_query(req:uri())
+        if params.email == nil then
+            return {error = "Missing email parameter"}
+        end
+        local formula = airtable.safeFormula("contact_email", params.email)
+        local fields = {"name_first", "name_last"}
+        local leader = airtable.list_records("Leaders", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields}).records[1]
+        if leader == nil then
+            return {error = "Leader not found"}
+        end
+        local first = leader.fields.name_first
+        local last = leader.fields.name_last
+        local name
+        if first and last then
+            name = first .. " " .. last
+        else
+            name = first or last
+        end
+        return {name = name}
+    else
+        return unauthorized(res)
+    end
+end)
+
 -- SHIP MANAGEMENT
 
 server:get("/ships", function(req, res)
@@ -414,7 +441,7 @@ server:get("/member/email", function(req, res)
             return {error = "Member not found"}
         end
         local clubName = member.fields["club_name (from rel_club)"]
-        return clubName and clubName[1] or nil
+        return {club_name = clubName and clubName[1] or nil}
     else
         return unauthorized(res)
     end
@@ -453,7 +480,7 @@ server:get("/member/slack", function(req, res)
             return {error = "Member not found"}
         end
         local clubName = member.fields["club_name (from rel_club)"]
-        return clubName and clubName[1] or nil
+        return {club_name = clubName and clubName[1] or nil}
     else
         return unauthorized(res)
     end

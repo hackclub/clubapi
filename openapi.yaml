@@ -379,6 +379,61 @@ paths:
                     type: string
                     example: "Unauthorized"
 
+  /leader/name:
+    get:
+      summary: Get leader's name by email
+      description: Returns the name associated with a leader by email. Requires Read permissions.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - in: query
+          name: email
+          schema:
+            type: string
+            format: email
+          required: true
+          description: Email of the leader
+      responses:
+        '200':
+          description: Leader name
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+        '400':
+          description: Missing email parameter
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Missing email parameter"
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Unauthorized"
+        '404':
+          description: Leader not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Leader not found"
+
   /leader/change:
     post:
       summary: Replace a club's leader
@@ -727,7 +782,11 @@ paths:
           content:
             application/json:
               schema:
-                type: string
+                type: object
+                properties:
+                  club_name:
+                    type: string
+                    nullable: true
         '400':
           description: Missing email parameter
           content:
@@ -833,7 +892,11 @@ paths:
           content:
             application/json:
               schema:
-                type: string
+                type: object
+                properties:
+                  club_name:
+                    type: string
+                    nullable: true
         '400':
           description: Missing slackid parameter
           content:
