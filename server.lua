@@ -49,6 +49,20 @@ end
 local CLUBS_MAP_CACHE_TTL_SECONDS = 45
 local clubsMapCache = { data = nil, expiresAt = 0 }
 
+local COUNT_CACHE_TTL_SECONDS = 60
+local countCache = { clubs = {}, country = {}, level = {} }
+
+local function cachedCount(bucket, key, computeFn)
+    local now = os.time()
+    local entry = bucket[key]
+    if entry and now < entry.expiresAt then
+        return entry.count
+    end
+    local count = computeFn()
+    bucket[key] = { count = count, expiresAt = now + COUNT_CACHE_TTL_SECONDS }
+    return count
+end
+
 local RATE_LIMIT_WINDOW_SECONDS = 60
 local RATE_LIMIT_MAX_REQUESTS = 10
 local RATE_LIMIT_NEAR_LIMIT_REQUESTS = 8
@@ -141,7 +155,10 @@ server:static_file("/openapi.yaml", "openapi.yaml")
 
 server:get("/clubs", function(req)
     log.request(req:uri(), req:headers())
-    return {totalClubs = airtable.count_records("Clubs")}
+    local total = cachedCount(countCache.clubs, "total", function()
+        return airtable.count_records("Clubs")
+    end)
+    return {totalClubs = total}
 end)
 
 server:get("/clubs/map", function(req, res)
@@ -191,8 +208,12 @@ server:get("/clubs/country", function(req)
     if params.country == nil then
         return {error = "Missing country parameter"}
     end
-    local formula = airtable.safeFormula("venue_addr_country", params.country)
-    return {clubs = airtable.count_records("Clubs", formula)}
+    local stripped = url.strip_quotes(params.country)
+    local count = cachedCount(countCache.country, stripped, function()
+        local formula = airtable.safeFormula("venue_addr_country", params.country)
+        return airtable.count_records("Clubs", formula)
+    end)
+    return {clubs = count}
 end)
 
 server:get("/clubs/level", function(req)
@@ -202,9 +223,12 @@ server:get("/clubs/level", function(req)
         return {error = "Missing level parameter"}
     end
     local stripped = url.strip_quotes(params.level)
-    local levelValue = "level " .. airtable.sanitizeFormulaValue(stripped)
-    local formula = airtable.safeFormula("level", levelValue)
-    return {clubs = airtable.count_records("Clubs", formula)}
+    local count = cachedCount(countCache.level, stripped, function()
+        local levelValue = "level " .. airtable.sanitizeFormulaValue(stripped)
+        local formula = airtable.safeFormula("level", levelValue)
+        return airtable.count_records("Clubs", formula)
+    end)
+    return {clubs = count}
 end)
 
 server:get("/club", function(req, res)
@@ -556,20 +580,18 @@ server:get("/members", function(req, res)
             return {error = "Missing club_name parameter"}
         end
         local formula = airtable.safeFormula("club_name", params.club_name)
-        local fields = {"rel_members"}
-        local club = airtable.list_records("Clubs", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields}).records[1]
+        local club = airtable.list_records("Clubs", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = {"club_name"}}).records[1]
         if club == nil then
             return {error = "Club not found"}
         end
-        local memberIds = club.fields.rel_members
-        if memberIds == nil then
-            return {members = {}}
-        end
+        local memberFormula = airtable.safeFormula("club_name (from rel_club)", params.club_name)
+        local memberResult = airtable.list_records("Members", nil, {filterByFormula = memberFormula, fields = {"name"}})
         local memberNames = {}
-        for _, memberId in ipairs(memberIds) do
-            local member = airtable.get_record("Members", memberId)
-            if member then
-                table.insert(memberNames, member.fields.name)
+        if memberResult and memberResult.records then
+            for _, member in ipairs(memberResult.records) do
+                if member.fields.name then
+                    table.insert(memberNames, member.fields.name)
+                end
             end
         end
         return {members = memberNames}
