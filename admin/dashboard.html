@@ -1,0 +1,820 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Clubs API Admin</title>
+    <style>
+      :root {
+        --red: #ec3750;
+        --green: #33d6a6;
+        --orange: #ff8c37;
+        --blue: #338eda;
+        --bg: #f9fafc;
+        --card: #ffffff;
+        --text: #1f2d3d;
+        --muted: #8492a6;
+        --border: #e0e6ed;
+        --hover: #f1f4f8;
+        --code: #f1f4f8;
+        --overlay: rgba(23, 23, 29, 0.55);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #17171d;
+          --card: #252429;
+          --text: #f9fafc;
+          --muted: #8492a6;
+          --border: #3c4858;
+          --hover: #2f2e35;
+          --code: #17171d;
+          --overlay: rgba(0, 0, 0, 0.65);
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        font-size: 14px;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        padding: 14px 24px;
+        background: var(--card);
+        border-bottom: 1px solid var(--border);
+      }
+      header h1 { margin: 0; font-size: 18px; }
+      header h1 span { color: var(--red); }
+      .who { display: flex; align-items: center; gap: 12px; color: var(--muted); }
+      nav { display: flex; gap: 4px; padding: 12px 24px 0; flex-wrap: wrap; }
+      nav button {
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        font: inherit;
+        font-weight: 600;
+        padding: 8px 14px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      nav button.active { background: var(--card); color: var(--text); box-shadow: inset 0 0 0 1px var(--border); }
+      main { padding: 16px 24px 48px; max-width: 1280px; }
+      section { display: none; }
+      section.active { display: block; }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 16px;
+      }
+      .card h2 { margin: 0 0 12px; font-size: 15px; }
+      .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+      .stat { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+      .stat .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+      .stat .value { font-size: 26px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+      .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+      .chart { display: flex; align-items: flex-end; gap: 6px; height: 160px; padding-top: 8px; }
+      .chart .col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; height: 100%; justify-content: flex-end; }
+      .chart .bar { width: 100%; max-width: 36px; background: var(--blue); border-radius: 4px 4px 0 0; position: relative; min-height: 2px; }
+      .chart .bar .err { position: absolute; left: 0; right: 0; bottom: 0; background: var(--red); border-radius: 0; }
+      .chart .day { font-size: 10px; color: var(--muted); white-space: nowrap; }
+      .legend { display: flex; gap: 16px; color: var(--muted); font-size: 12px; margin-top: 8px; }
+      .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+      .table-wrap { overflow-x: auto; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; vertical-align: middle; }
+      th { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+      tbody tr:hover { background: var(--hover); }
+      td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+      td.wrap { white-space: normal; word-break: break-all; min-width: 240px; }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; background: var(--code); padding: 2px 6px; border-radius: 4px; }
+      .muted { color: var(--muted); }
+      .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+      .s2 { background: rgba(51, 214, 166, 0.16); color: #1f9e79; }
+      .s4 { background: rgba(255, 140, 55, 0.16); color: #c96a1f; }
+      .s5 { background: rgba(236, 55, 80, 0.16); color: var(--red); }
+      .perm-read { background: rgba(51, 142, 218, 0.16); color: var(--blue); }
+      .perm-write { background: rgba(255, 140, 55, 0.16); color: #c96a1f; }
+      .perm-admin { background: rgba(236, 55, 80, 0.16); color: var(--red); }
+      button.btn, select, input {
+        font: inherit;
+        color: var(--text);
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 7px 10px;
+      }
+      button.btn { cursor: pointer; font-weight: 600; }
+      button.btn:hover { background: var(--hover); }
+      button.btn.primary { background: var(--red); border-color: var(--red); color: #fff; }
+      button.btn.primary:hover { filter: brightness(0.95); }
+      button.btn.danger { color: var(--red); }
+      button.btn.small { padding: 4px 9px; font-size: 13px; }
+      button.btn:disabled { opacity: 0.5; cursor: default; }
+      .actions { display: flex; gap: 6px; }
+      .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+      .toolbar input[type="text"] { min-width: 200px; }
+      .empty { color: var(--muted); padding: 24px 10px; text-align: center; }
+      .more { display: flex; justify-content: center; padding-top: 12px; }
+      .toast {
+        position: fixed;
+        right: 16px;
+        bottom: 16px;
+        max-width: 360px;
+        background: var(--text);
+        color: var(--bg);
+        padding: 10px 14px;
+        border-radius: 8px;
+        opacity: 0;
+        transform: translateY(8px);
+        transition: opacity 0.15s, transform 0.15s;
+        pointer-events: none;
+      }
+      .toast.show { opacity: 1; transform: none; }
+      .toast.error { background: var(--red); color: #fff; }
+      .modal { position: fixed; inset: 0; background: var(--overlay); display: none; place-items: center; padding: 16px; }
+      .modal.show { display: grid; }
+      .modal .card { max-width: 560px; width: 100%; margin: 0; }
+      .secret { display: flex; gap: 8px; align-items: center; margin: 12px 0; }
+      .secret code { flex: 1; padding: 10px; word-break: break-all; white-space: normal; }
+      .warning { color: var(--orange); font-weight: 600; }
+      [hidden] { display: none !important; }
+      .banner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        padding: 10px 24px;
+        background: rgba(255, 140, 55, 0.16);
+        color: #c96a1f;
+        font-weight: 600;
+      }
+      .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        padding: 2px 4px 2px 10px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        font-size: 13px;
+      }
+      .chip.locked { padding-right: 10px; }
+      .chip button {
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+        font-size: 15px;
+        line-height: 1;
+        padding: 2px 6px;
+        border-radius: 999px;
+      }
+      .chip button:hover { color: var(--red); }
+      .inline-form { display: flex; gap: 6px; margin-top: 8px; }
+      .inline-form input { padding: 4px 8px; font-size: 13px; min-width: 200px; }
+      .role-super { background: rgba(236, 55, 80, 0.16); color: var(--red); }
+      .role-admin { background: rgba(51, 142, 218, 0.16); color: var(--blue); }
+      @media (max-width: 640px) {
+        header, nav, main { padding-left: 16px; padding-right: 16px; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1><span>Clubs API</span> Admin</h1>
+      <div class="who">
+        <span id="who"></span>
+        <button class="btn small" id="logout">Sign out</button>
+      </div>
+    </header>
+
+    <div class="banner" id="impersonation" hidden>
+      <span id="impersonation-text"></span>
+      <button class="btn small" id="impersonation-stop">Stop viewing as admin</button>
+    </div>
+
+    <nav>
+      <button data-tab="overview" class="active">Overview</button>
+      <button data-tab="keys">API keys</button>
+      <button data-tab="requests">Requests</button>
+      <button data-tab="admins" data-super hidden>Admins</button>
+      <button data-tab="audit" data-super hidden>Audit log</button>
+    </nav>
+
+    <main>
+      <section id="tab-overview" class="active">
+        <div class="stats" id="stats"></div>
+        <div class="card">
+          <h2>Requests, last 14 days</h2>
+          <div class="chart" id="chart"></div>
+          <div class="legend"><span><i style="background: var(--blue)"></i>Requests</span><span><i style="background: var(--red)"></i>Errors (4xx/5xx)</span></div>
+        </div>
+        <div class="grid2">
+          <div class="card">
+            <h2>Top endpoints, last 7 days</h2>
+            <div class="table-wrap"><table id="top-paths"></table></div>
+          </div>
+          <div class="card">
+            <h2>Top callers, last 7 days</h2>
+            <div class="table-wrap"><table id="top-callers"></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-keys">
+        <div class="card">
+          <h2>Create a key</h2>
+          <form class="toolbar" id="create-form">
+            <input type="text" id="new-name" placeholder="Key name (e.g. project or person)" required maxlength="200" />
+            <select id="new-perms"></select>
+            <select id="new-owner" data-super hidden></select>
+            <button class="btn primary" type="submit">Create key</button>
+          </form>
+        </div>
+        <div class="card">
+          <h2 id="keys-title">All keys</h2>
+          <div class="table-wrap"><table id="keys-table"></table></div>
+        </div>
+      </section>
+
+      <section id="tab-admins">
+        <div class="card">
+          <h2>Invite an admin</h2>
+          <form class="toolbar" id="invite-form">
+            <input type="text" id="invite-name" placeholder="Name" required maxlength="100" />
+            <input type="text" id="invite-email" placeholder="Email they sign in with" required maxlength="254" />
+            <button class="btn primary" type="submit">Add admin</button>
+          </form>
+          <p class="muted" style="margin: 0">Admins sign in with Hack Club Auth using any of their emails. They only see keys they own, can only create read or write keys, and only see the start of each key.</p>
+        </div>
+        <div class="card">
+          <h2>Admins</h2>
+          <div class="table-wrap"><table id="admins-table"></table></div>
+        </div>
+      </section>
+
+      <section id="tab-requests">
+        <div class="card">
+          <div class="toolbar">
+            <select id="filter-key"></select>
+            <select id="filter-status">
+              <option value="">All statuses</option>
+              <option value="ok">Successful</option>
+              <option value="errors">Errors</option>
+            </select>
+            <input type="text" id="filter-path" placeholder="Filter by path, e.g. /member" />
+            <button class="btn" id="filter-apply">Apply</button>
+          </div>
+          <div class="table-wrap"><table id="requests-table"></table></div>
+          <div class="more"><button class="btn" id="requests-more">Load more</button></div>
+        </div>
+      </section>
+
+      <section id="tab-audit">
+        <div class="card">
+          <h2>Admin actions</h2>
+          <div class="table-wrap"><table id="audit-table"></table></div>
+        </div>
+      </section>
+    </main>
+
+    <div class="modal" id="secret-modal">
+      <div class="card">
+        <h2 id="secret-title">New API key</h2>
+        <p class="warning" id="secret-warning">Copy this key now. It won't be shown again.</p>
+        <div class="secret">
+          <code id="secret-value"></code>
+          <button class="btn" id="secret-copy">Copy</button>
+        </div>
+        <div class="actions" style="justify-content: flex-end">
+          <button class="btn primary" id="secret-close">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+      const state = { me: null, keys: [], admins: [], requestsBefore: "" };
+      const ALL_PERMS = ["read", "write", "admin"];
+      const ADMIN_PERMS = ["read", "write"];
+
+      function el(tag, props, ...children) {
+        const node = document.createElement(tag);
+        for (const [name, value] of Object.entries(props || {})) {
+          if (name === "class") node.className = value;
+          else if (name.startsWith("on")) node.addEventListener(name.slice(2), value);
+          else if (value !== undefined && value !== null && value !== false) node.setAttribute(name, value === true ? "" : value);
+        }
+        for (const child of children.flat()) {
+          if (child === null || child === undefined || child === false) continue;
+          node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+        }
+        return node;
+      }
+
+      function list(value) {
+        return Array.isArray(value) ? value : [];
+      }
+
+      function isSuper() {
+        return Boolean(state.me && state.me.is_superadmin);
+      }
+
+      function num(value) {
+        return Number(value || 0).toLocaleString();
+      }
+
+      function when(value) {
+        if (!value) return el("span", { class: "muted" }, "unknown");
+        const date = new Date(value);
+        if (isNaN(date)) return String(value);
+        return el("span", { title: date.toISOString() }, date.toLocaleString());
+      }
+
+      function ago(value) {
+        if (!value) return el("span", { class: "muted" }, "never");
+        const seconds = Math.max(0, (Date.now() - new Date(value).getTime()) / 1000);
+        const units = [[86400, "d"], [3600, "h"], [60, "m"]];
+        let label = Math.floor(seconds) + "s ago";
+        for (const [size, unit] of units) {
+          if (seconds >= size) { label = Math.floor(seconds / size) + unit + " ago"; break; }
+        }
+        return el("span", { title: new Date(value).toLocaleString() }, label);
+      }
+
+      function statusBadge(status) {
+        const code = Number(status);
+        const cls = code >= 500 ? "s5" : code >= 400 ? "s4" : "s2";
+        return el("span", { class: "badge " + cls }, String(code));
+      }
+
+      function permBadge(perms) {
+        return el("span", { class: "badge perm-" + perms }, perms);
+      }
+
+      function keyLabel(key) {
+        return key.name || "key #" + key.id;
+      }
+
+      function maskedKey(key) {
+        if (key.key_suffix) return (key.key_prefix || "") + "…" + key.key_suffix;
+        return (key.key_prefix || "") + "…";
+      }
+
+      function toast(message, isError) {
+        const box = document.getElementById("toast");
+        box.textContent = message;
+        box.className = "toast show" + (isError ? " error" : "");
+        clearTimeout(toast.timer);
+        toast.timer = setTimeout(() => { box.className = "toast"; }, 3500);
+      }
+
+      async function api(path, body) {
+        const options = { credentials: "same-origin", headers: { "X-Requested-With": "clubapi-admin" } };
+        if (body !== undefined) {
+          options.method = "POST";
+          options.headers["Content-Type"] = "application/json";
+          options.body = JSON.stringify(body);
+        }
+        const response = await fetch(path, options);
+        if (response.status === 401) {
+          location.href = "/admin";
+          throw new Error("Signed out");
+        }
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.error) throw new Error(data.error || "Request failed (" + response.status + ")");
+        return data;
+      }
+
+      async function act(work, success) {
+        try {
+          const result = await work();
+          if (success) toast(success);
+          return result;
+        } catch (e) {
+          toast(e.message, true);
+          return null;
+        }
+      }
+
+      function table(target, headers, rows, emptyText) {
+        const node = document.getElementById(target);
+        node.replaceChildren(
+          el("thead", {}, el("tr", {}, headers.map((h) => el("th", { class: h.num ? "num" : "" }, h.label)))),
+          el("tbody", {}, rows.length ? rows : el("tr", {}, el("td", { class: "empty", colspan: headers.length }, emptyText)))
+        );
+      }
+
+      function callerLabel(row) {
+        if (row.auth_state === "valid") return row.key_name || "Deleted key #" + row.key_id;
+        if (row.auth_state === "invalid") return el("span", { class: "badge s4" }, "invalid key");
+        return el("span", { class: "muted" }, "anonymous");
+      }
+
+      function ownerOptions(selected) {
+        return [
+          el("option", { value: "", selected: !selected }, "Unassigned"),
+          ...state.admins.map((a) => el("option", { value: String(a.id), selected: String(selected) === String(a.id) }, a.name + (a.is_superadmin ? " (you)" : ""))),
+        ];
+      }
+
+      async function loadAdminsList() {
+        if (!isSuper()) return;
+        const data = await api("/admin/api/admins");
+        state.admins = list(data.admins);
+      }
+
+      async function loadOverview() {
+        const data = await api("/admin/api/overview");
+        const t = data.totals || {};
+        const tiles = [
+          ["Requests (24h)", t.last_24h],
+          ["Errors (24h)", t.errors_24h],
+          isSuper() && ["Invalid keys (24h)", t.invalid_keys_24h],
+          isSuper() && ["Rate limited (24h)", t.rate_limited_24h],
+          ["Requests logged", t.total],
+          [isSuper() ? "API keys" : "Your keys", t.keys],
+        ].filter(Boolean);
+        document.getElementById("stats").replaceChildren(
+          ...tiles.map(([label, value]) => el("div", { class: "stat" }, el("div", { class: "label" }, label), el("div", { class: "value" }, num(value))))
+        );
+
+        const days = list(data.daily);
+        const peak = Math.max(1, ...days.map((d) => Number(d.requests || 0)));
+        document.getElementById("chart").replaceChildren(
+          ...days.map((d) => {
+            const total = Number(d.requests || 0);
+            const errors = Number(d.errors || 0);
+            const height = (total / peak) * 100;
+            const errHeight = total ? (errors / total) * 100 : 0;
+            return el("div", { class: "col", title: d.day + ": " + num(total) + " requests, " + num(errors) + " errors" },
+              el("div", { class: "bar", style: "height: " + height + "%" }, el("div", { class: "err", style: "height: " + errHeight + "%" })),
+              el("div", { class: "day" }, d.day.slice(5))
+            );
+          })
+        );
+
+        table("top-paths", [{ label: "Endpoint" }, { label: "Requests", num: true }, { label: "Errors", num: true }],
+          list(data.paths).map((p) => el("tr", {}, el("td", {}, el("code", {}, p.path)), el("td", { class: "num" }, num(p.requests)), el("td", { class: "num" }, num(p.errors)))),
+          "No requests in the last 7 days");
+
+        table("top-callers", [{ label: "Caller" }, { label: "Requests", num: true }],
+          list(data.callers).map((c) => el("tr", {}, el("td", {}, c.caller), el("td", { class: "num" }, num(c.requests)))),
+          "No requests in the last 7 days");
+      }
+
+      function showSecret(title, secret, warning) {
+        document.getElementById("secret-title").textContent = title;
+        document.getElementById("secret-warning").textContent = warning || "Copy this key now. It won't be shown again.";
+        document.getElementById("secret-value").textContent = secret;
+        document.getElementById("secret-modal").classList.add("show");
+      }
+
+      async function changePerms(key, select) {
+        const perms = select.value;
+        if (!confirm('Change "' + keyLabel(key) + '" from ' + key.perms + " to " + perms + "?")) {
+          select.value = key.perms;
+          return;
+        }
+        const done = await act(() => api("/admin/api/keys/perms", { id: key.id, perms }), "Permissions updated");
+        if (!done) select.value = key.perms;
+        await loadKeys();
+      }
+
+      async function changeOwner(key, select) {
+        const ownerId = select.value;
+        const done = await act(() => api("/admin/api/keys/owner", { id: key.id, owner_id: ownerId ? Number(ownerId) : "" }), "Owner updated");
+        if (!done) select.value = key.owner_admin_id ? String(key.owner_admin_id) : "";
+        await Promise.all([loadKeys(), loadAdminsList()]);
+      }
+
+      async function renameKey(key) {
+        const name = prompt("New name for this key", key.name || "");
+        if (name === null || name.trim() === "" || name.trim() === key.name) return;
+        await act(() => api("/admin/api/keys/rename", { id: key.id, name: name.trim() }), "Key renamed");
+        await loadKeys();
+      }
+
+      async function rotateKey(key) {
+        if (!confirm('Rotate "' + keyLabel(key) + '"? The current key stops working immediately.')) return;
+        const data = await act(() => api("/admin/api/keys/rotate", { id: key.id }));
+        if (data) showSecret("New key for " + keyLabel(data), data.key);
+        await loadKeys();
+      }
+
+      async function revealKey(key) {
+        if (!confirm('Show the full key for "' + keyLabel(key) + '"? This is recorded in the audit log.')) return;
+        const data = await act(() => api("/admin/api/keys/reveal", { id: key.id }));
+        if (data) showSecret("Full key for " + keyLabel(data), data.key, "This key is live. Close this when you're done.");
+      }
+
+      async function deleteKey(key) {
+        if (!confirm('Delete "' + keyLabel(key) + '"? Anything using it will start getting 401s. Its request history is kept.')) return;
+        await act(() => api("/admin/api/keys/delete", { id: key.id }), "Key deleted");
+        await loadKeys();
+      }
+
+      function viewRequests(key) {
+        renderKeyFilter();
+        document.getElementById("filter-key").value = String(key.id);
+        switchTab("requests");
+        reloadRequests();
+      }
+
+      function permsCell(key) {
+        if (!isSuper() && key.perms === "admin") return permBadge("admin");
+        const options = isSuper() ? ALL_PERMS : ADMIN_PERMS;
+        const select = el("select", { onchange: () => changePerms(key, select) },
+          options.map((p) => el("option", { value: p, selected: p === key.perms }, p)));
+        return select;
+      }
+
+      async function loadKeys() {
+        const data = await api("/admin/api/keys");
+        state.keys = list(data.keys);
+        const headers = [{ label: "Name" }, { label: "Key" }, { label: "Perms" }];
+        if (isSuper()) headers.push({ label: "Owner" });
+        headers.push({ label: "Created" }, { label: "Last used" }, { label: "7d", num: true }, { label: "7d errors", num: true }, { label: "Total", num: true }, { label: "" });
+
+        table("keys-table", headers, state.keys.map((key) => {
+          const cells = [
+            el("td", {}, key.name || el("span", { class: "muted" }, "unnamed")),
+            el("td", {}, el("code", { title: key.rotated_at ? "Rotated " + new Date(key.rotated_at).toLocaleString() : null }, maskedKey(key))),
+            el("td", {}, permsCell(key)),
+          ];
+          if (isSuper()) {
+            const owner = el("select", { onchange: () => changeOwner(key, owner) }, ownerOptions(key.owner_admin_id));
+            cells.push(el("td", {}, owner));
+          }
+          cells.push(
+            el("td", { title: key.created_by_name ? "Created by " + key.created_by_name : null }, when(key.created_at)),
+            el("td", {}, ago(key.last_used_at)),
+            el("td", { class: "num" }, num(key.requests_7d)),
+            el("td", { class: "num" }, num(key.errors_7d)),
+            el("td", { class: "num" }, num(key.requests_total)),
+            el("td", {}, el("div", { class: "actions" },
+              el("button", { class: "btn small", onclick: () => viewRequests(key) }, "Requests"),
+              isSuper() && el("button", { class: "btn small", onclick: () => revealKey(key) }, "Reveal"),
+              el("button", { class: "btn small", onclick: () => rotateKey(key) }, "Rotate"),
+              el("button", { class: "btn small", onclick: () => renameKey(key) }, "Rename"),
+              el("button", { class: "btn small danger", onclick: () => deleteKey(key) }, "Delete")
+            ))
+          );
+          return el("tr", {}, cells);
+        }), isSuper() ? "No API keys yet" : "You don't have any keys yet");
+        renderKeyFilter();
+      }
+
+      function renderKeyFilter() {
+        const select = document.getElementById("filter-key");
+        const current = select.value || "all";
+        select.replaceChildren(
+          el("option", { value: "all" }, isSuper() ? "All callers" : "All your keys"),
+          isSuper() && el("option", { value: "anonymous" }, "Anonymous"),
+          isSuper() && el("option", { value: "invalid" }, "Invalid keys"),
+          ...state.keys.map((key) => el("option", { value: String(key.id) }, (key.name || "unnamed") + " (" + key.perms + ")"))
+        );
+        select.value = [...select.options].some((o) => o.value === current) ? current : "all";
+      }
+
+      function requestRow(r) {
+        return el("tr", {},
+          el("td", {}, when(r.created_at)),
+          el("td", {}, callerLabel(r)),
+          el("td", {}, el("code", {}, r.method)),
+          el("td", { class: "wrap" }, el("code", {}, r.path + (r.query ? "?" + r.query : ""))),
+          el("td", {}, statusBadge(r.status)),
+          el("td", { class: "num" }, num(r.duration_ms) + " ms"),
+          el("td", { class: "muted" }, r.ip || "—")
+        );
+      }
+
+      const requestHeaders = [{ label: "Time" }, { label: "Caller" }, { label: "Method" }, { label: "Request" }, { label: "Status" }, { label: "Duration", num: true }, { label: "IP" }];
+
+      async function loadRequests(append) {
+        const params = new URLSearchParams({
+          key: document.getElementById("filter-key").value || "all",
+          status: document.getElementById("filter-status").value,
+          path: document.getElementById("filter-path").value.trim(),
+          before: append ? state.requestsBefore : "",
+        });
+        const data = await api("/admin/api/requests?" + params.toString());
+        const rows = list(data.requests);
+        const body = document.querySelector("#requests-table tbody");
+        if (append && body) {
+          rows.forEach((r) => body.append(requestRow(r)));
+        } else {
+          table("requests-table", requestHeaders, rows.map(requestRow), "No requests match these filters");
+        }
+        state.requestsBefore = data.next_before ? String(data.next_before) : "";
+        document.getElementById("requests-more").disabled = !data.next_before;
+      }
+
+      function reloadRequests() {
+        loadRequests(false).catch((e) => toast(e.message, true));
+      }
+
+      async function addEmail(adminRow, input) {
+        const email = input.value.trim();
+        if (!email) return;
+        const done = await act(() => api("/admin/api/admins/emails/add", { id: adminRow.id, email }), "Email added");
+        if (done) input.value = "";
+        await loadAdmins();
+      }
+
+      async function removeEmail(adminRow, email) {
+        if (!confirm("Remove " + email + " from " + adminRow.name + "? They won't be able to sign in with it anymore.")) return;
+        await act(() => api("/admin/api/admins/emails/remove", { email }), "Email removed");
+        await loadAdmins();
+      }
+
+      async function renameAdmin(adminRow) {
+        const name = prompt("Name for this admin", adminRow.name);
+        if (name === null || name.trim() === "" || name.trim() === adminRow.name) return;
+        await act(() => api("/admin/api/admins/rename", { id: adminRow.id, name: name.trim() }), "Admin renamed");
+        await loadAdmins();
+      }
+
+      async function removeAdmin(adminRow) {
+        if (!confirm("Remove " + adminRow.name + " as an admin? Their keys keep working but become unassigned.")) return;
+        await act(() => api("/admin/api/admins/delete", { id: adminRow.id }), "Admin removed");
+        await loadAdmins();
+      }
+
+      async function impersonate(adminRow) {
+        const done = await act(() => api("/admin/api/impersonate", { id: adminRow.id }));
+        if (done) {
+          location.hash = "#overview";
+          location.reload();
+        }
+      }
+
+      async function loadAdmins() {
+        await loadAdminsList();
+        table("admins-table", [{ label: "Name" }, { label: "Role" }, { label: "Emails" }, { label: "Keys", num: true }, { label: "Added" }, { label: "" }],
+          state.admins.map((a) => {
+            const emails = list(a.emails);
+            const input = el("input", { type: "text", placeholder: "Add another email", maxlength: "254" });
+            input.addEventListener("keydown", (e) => { if (e.key === "Enter") addEmail(a, input); });
+            return el("tr", {},
+              el("td", {}, a.name),
+              el("td", {}, el("span", { class: "badge " + (a.is_superadmin ? "role-super" : "role-admin") }, a.is_superadmin ? "superadmin" : "admin")),
+              el("td", { class: "wrap" },
+                el("div", { class: "chips" }, emails.map((email) =>
+                  el("span", { class: "chip" + (emails.length > 1 ? "" : " locked") }, email,
+                    emails.length > 1 && el("button", { title: "Remove " + email, onclick: () => removeEmail(a, email) }, "×")))),
+                el("div", { class: "inline-form" }, input, el("button", { class: "btn small", onclick: () => addEmail(a, input) }, "Add"))
+              ),
+              el("td", { class: "num" }, num(a.key_count)),
+              el("td", {}, when(a.created_at)),
+              el("td", {}, el("div", { class: "actions" },
+                el("button", { class: "btn small", onclick: () => impersonate(a) }, "View as"),
+                el("button", { class: "btn small", onclick: () => renameAdmin(a) }, "Rename"),
+                !a.is_superadmin && el("button", { class: "btn small danger", onclick: () => removeAdmin(a) }, "Remove")
+              ))
+            );
+          }),
+          "No admins yet");
+      }
+
+      async function loadAudit() {
+        const data = await api("/admin/api/audit");
+        table("audit-table", [{ label: "Time" }, { label: "Admin" }, { label: "Action" }, { label: "Key" }, { label: "Detail" }],
+          list(data.entries).map((a) => el("tr", {},
+            el("td", {}, when(a.created_at)),
+            el("td", {}, a.actor_email),
+            el("td", {}, el("code", {}, a.action)),
+            el("td", {}, a.key_name || (a.key_id ? "#" + a.key_id : el("span", { class: "muted" }, "—"))),
+            el("td", { class: "wrap" }, a.detail || "")
+          )),
+          "No admin actions yet");
+      }
+
+      const loaders = { overview: loadOverview, keys: loadKeys, requests: () => loadRequests(false), admins: loadAdmins, audit: loadAudit };
+
+      function availableTab(name) {
+        const button = document.querySelector('nav button[data-tab="' + name + '"]');
+        return button && !button.hidden ? name : "overview";
+      }
+
+      function switchTab(name) {
+        document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+        document.querySelectorAll("main section").forEach((s) => s.classList.toggle("active", s.id === "tab-" + name));
+        history.replaceState(null, "", "#" + name);
+      }
+
+      function applyRole() {
+        const me = state.me;
+        document.getElementById("who").textContent = me.impersonating ? me.email + " (as " + me.name + ")" : me.email;
+        document.querySelectorAll("[data-super]").forEach((node) => { node.hidden = !isSuper(); });
+        document.getElementById("keys-title").textContent = isSuper() ? "All keys" : "Your keys";
+        document.getElementById("new-perms").replaceChildren(
+          ...(isSuper() ? ALL_PERMS : ADMIN_PERMS).map((p) => el("option", { value: p }, p))
+        );
+        if (isSuper()) {
+          document.getElementById("new-owner").replaceChildren(...ownerOptions(me.admin_id));
+        }
+        const banner = document.getElementById("impersonation");
+        banner.hidden = !me.impersonating;
+        document.getElementById("impersonation-text").textContent = me.impersonating
+          ? "You're viewing the panel as " + me.name + " would see it. Changes you make here are recorded under your account."
+          : "";
+      }
+
+      document.querySelectorAll("nav button").forEach((button) => {
+        button.addEventListener("click", () => {
+          switchTab(button.dataset.tab);
+          loaders[button.dataset.tab]().catch((e) => toast(e.message, true));
+        });
+      });
+
+      document.getElementById("create-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const name = document.getElementById("new-name").value.trim();
+        const perms = document.getElementById("new-perms").value;
+        if (!name) return;
+        const body = { name, perms };
+        if (isSuper()) {
+          const owner = document.getElementById("new-owner").value;
+          body.owner_id = owner ? Number(owner) : "";
+        }
+        const data = await act(() => api("/admin/api/keys/create", body));
+        if (data) {
+          document.getElementById("new-name").value = "";
+          showSecret("New " + data.perms + " key: " + keyLabel(data), data.key);
+        }
+        await loadKeys();
+      });
+
+      document.getElementById("invite-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const name = document.getElementById("invite-name").value.trim();
+        const email = document.getElementById("invite-email").value.trim();
+        if (!name || !email) return;
+        const done = await act(() => api("/admin/api/admins/create", { name, email }), name + " can now sign in");
+        if (done) {
+          document.getElementById("invite-name").value = "";
+          document.getElementById("invite-email").value = "";
+        }
+        await loadAdmins();
+        document.getElementById("new-owner").replaceChildren(...ownerOptions(state.me.admin_id));
+      });
+
+      document.getElementById("impersonation-stop").addEventListener("click", async () => {
+        const done = await act(() => api("/admin/api/impersonate/stop", {}));
+        if (done) {
+          location.hash = "#admins";
+          location.reload();
+        }
+      });
+
+      document.getElementById("filter-apply").addEventListener("click", reloadRequests);
+      document.getElementById("filter-key").addEventListener("change", reloadRequests);
+      document.getElementById("filter-status").addEventListener("change", reloadRequests);
+      document.getElementById("filter-path").addEventListener("keydown", (e) => { if (e.key === "Enter") reloadRequests(); });
+      document.getElementById("requests-more").addEventListener("click", () => loadRequests(true).catch((e) => toast(e.message, true)));
+
+      document.getElementById("secret-copy").addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(document.getElementById("secret-value").textContent);
+          toast("Copied to clipboard");
+        } catch {
+          toast("Couldn't copy. Select the key and copy it manually.", true);
+        }
+      });
+      document.getElementById("secret-close").addEventListener("click", () => {
+        document.getElementById("secret-modal").classList.remove("show");
+        document.getElementById("secret-value").textContent = "";
+      });
+
+      document.getElementById("logout").addEventListener("click", async () => {
+        try { await api("/admin/logout", {}); } catch {}
+        location.href = "/admin?error=signed_out";
+      });
+
+      (async () => {
+        try {
+          state.me = await api("/admin/api/me");
+          await loadAdminsList();
+          applyRole();
+          await loadKeys();
+          const tab = availableTab((location.hash || "#overview").slice(1));
+          switchTab(tab);
+          if (tab !== "keys") await loaders[tab]();
+        } catch (e) {
+          toast(e.message, true);
+        }
+      })();
+    </script>
+  </body>
+</html>

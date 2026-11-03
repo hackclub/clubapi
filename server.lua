@@ -1,8 +1,13 @@
 local server = require("http").server.new()
+local fs = require("fs")
+local clock = require("datetime")
 local airtable = require("utils/airtable")
 local url = require("utils/urlparams")
 local auth = require("utils/auth")
 local log = require("utils/logging")
+local db = require("utils/db")
+local admin = require("utils/admin")
+local requestlog = require("utils/requestlog")
 
 local function fuzzCoord(n)
     if type(n) ~= "number" then
@@ -125,20 +130,77 @@ local function rateLimited(handler)
     end
 end
 
+local function nowMs()
+    return clock.new():get_epoch_milliseconds()
+end
+
+local function statusTracking(res)
+    local tracker = { status = 200 }
+    tracker.res = setmetatable({}, {
+        __index = function(_, name)
+            local member = res[name]
+            if type(member) ~= "function" then
+                return member
+            end
+            return function(_, ...)
+                if name == "set_status_code" then
+                    tracker.status = ...
+                end
+                return member(res, ...)
+            end
+        end
+    })
+    return tracker
+end
+
+local function recorded(handler)
+    return function(req, res)
+        local started = nowMs()
+        local header = req:headers().authorization
+        local keyRow = nil
+        local authState = "none"
+        if header ~= nil and header ~= "" then
+            keyRow = auth.identify(header)
+            authState = keyRow and "valid" or "invalid"
+        end
+
+        local tracker = statusTracking(res)
+        local ok, result = pcall(handler, req, tracker.res)
+
+        local uri = req:uri()
+        pcall(requestlog.record, {
+            key_id = keyRow and keyRow.id,
+            key_name = keyRow and keyRow.name,
+            auth_state = authState,
+            method = req:method(),
+            path = uri:match("^[^?]*"),
+            query = uri:match("%?(.*)$"),
+            status = ok and tracker.status or 500,
+            duration_ms = nowMs() - started,
+            ip = clientIp(req),
+        })
+
+        if not ok then
+            error(result, 0)
+        end
+        return result
+    end
+end
+
 local rawGet = server.get
 local rawPost = server.post
 local rawDelete = server.delete
 
 function server:get(path, callback, config)
-    return rawGet(self, path, rateLimited(callback), config)
+    return rawGet(self, path, recorded(rateLimited(callback)), config)
 end
 
 function server:post(path, callback, config)
-    return rawPost(self, path, rateLimited(callback), config)
+    return rawPost(self, path, recorded(rateLimited(callback)), config)
 end
 
 function server:delete(path, callback, config)
-    return rawDelete(self, path, rateLimited(callback), config)
+    return rawDelete(self, path, recorded(rateLimited(callback)), config)
 end
 
 
@@ -810,8 +872,12 @@ server:post("/key/create", function(req, res)
         end
         local name = url.strip_quotes(params.name)
         local perms = url.strip_quotes(params.perms)
+        if not auth.isDelegablePerms(perms) then
+            return {success = false, error = "invalid_perms (must be read or write; admin keys can only be created in the admin panel)"}
+        end
         local created, err = auth.createKey(name, perms)
         if created then
+            admin.audit("api key: " .. auth.getKeyName(req:headers().authorization), "key.create", created, "perms: " .. created.perms)
             return {success = true, key = created.key, name = created.name, perms = created.perms}
         else
             return {success = false, error = err or "Failed to create key"}
@@ -828,8 +894,10 @@ server:post("/key/revoke", function(req, res)
         if params.key == nil then
             return {success = false}
         end
+        local actor = "api key: " .. auth.getKeyName(req:headers().authorization)
         local revoked = auth.revokeKey(url.strip_quotes(params.key))
         if revoked then
+            admin.audit(actor, "key.delete", revoked, "revoked via /key/revoke")
             return {success = true, owner_email = revoked.name or ""}
         else
             return {success = false}
@@ -838,6 +906,476 @@ server:post("/key/revoke", function(req, res)
         return unauthorized(res)
     end
 end)
+
+-----------------
+-- ADMIN PANEL --
+-----------------
+
+local ADMIN_REQUEST_HEADER = "clubapi-admin"
+local MAX_KEY_NAME_LENGTH = 200
+local REQUEST_LOG_RETENTION_DAYS = tonumber(os.getenv("REQUEST_LOG_RETENTION_DAYS")) or 90
+local HOUR_MS = 60 * 60 * 1000
+
+local ADMIN_ERRORS = {
+    email_taken = "That email already belongs to an admin",
+    not_removable = "An admin needs at least one email; remove the admin instead",
+}
+
+local adminPages = {
+    login = fs.read_file("admin/login.html"),
+    dashboard = fs.read_file("admin/dashboard.html"),
+}
+
+local function html(res, body)
+    res:set_header("Content-Type", "text/html; charset=utf-8")
+    res:set_header("Cache-Control", "no-store")
+    res:set_header("X-Frame-Options", "DENY")
+    return body
+end
+
+local function redirect(res, location)
+    res:set_status_code(302)
+    res:set_header("Location", location)
+    return ""
+end
+
+local function failure(res, status, message)
+    res:set_status_code(status)
+    return {error = message}
+end
+
+local function jsonBody(req)
+    local ok, body = pcall(function()
+        return req:body():json()
+    end)
+    if ok and type(body) == "table" then
+        return body
+    end
+    return {}
+end
+
+local function keyName(value)
+    if type(value) ~= "string" then
+        return nil
+    end
+    local name = value:gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" or #name > MAX_KEY_NAME_LENGTH then
+        return nil
+    end
+    return name
+end
+
+local function sameId(a, b)
+    return a ~= nil and b ~= nil and tostring(a) == tostring(b)
+end
+
+local function ownerScope(ctx)
+    if ctx.actor.is_superadmin then
+        return nil
+    end
+    return ctx.actor.id
+end
+
+local function managedKey(ctx, id)
+    local key = auth.getKeyById(id)
+    if not key then
+        return nil
+    end
+    if ctx.actor.is_superadmin or sameId(key.owner_admin_id, ctx.actor.id) then
+        return key
+    end
+    return nil
+end
+
+local function auditAs(ctx, action, key, detail)
+    local note = detail
+    if ctx.impersonating then
+        local suffix = "viewing as " .. tostring(ctx.actor.name)
+        note = note and (note .. " (" .. suffix .. ")") or suffix
+    end
+    admin.audit(ctx.email, action, key, note)
+end
+
+local function adminOnly(handler, options)
+    options = options or {}
+    return function(req, res)
+        res:set_header("Cache-Control", "no-store")
+        local ctx = admin.session(req)
+        if not ctx then
+            return failure(res, 401, "Not signed in")
+        end
+        if options.mutating and req:headers()["x-requested-with"] ~= ADMIN_REQUEST_HEADER then
+            return failure(res, 403, "Missing admin request header")
+        end
+        if options.superadmin and not ctx.actor.is_superadmin then
+            return failure(res, 403, "Only the superadmin can do that")
+        end
+        if options.realSuperadmin and not ctx.real.is_superadmin then
+            return failure(res, 403, "Only the superadmin can do that")
+        end
+        return handler(req, res, ctx)
+    end
+end
+
+local function validOwner(value)
+    if value == nil or value == "" then
+        return ""
+    end
+    if admin.exists(value) then
+        return tostring(value)
+    end
+    return nil
+end
+
+rawGet(server, "/admin", function(req, res)
+    if admin.session(req) then
+        return html(res, adminPages.dashboard)
+    end
+    return html(res, adminPages.login)
+end)
+
+rawGet(server, "/admin/login", function(req, res)
+    if not admin.isConfigured() then
+        return redirect(res, "/admin?error=not_configured")
+    end
+    local stateToken = admin.randomToken()
+    if not stateToken then
+        return redirect(res, "/admin?error=auth_failed")
+    end
+    res:set_header("Set-Cookie", admin.cookieHeader(admin.STATE_COOKIE, stateToken, admin.STATE_TTL_SECONDS))
+    return redirect(res, admin.authorizeUrl(stateToken))
+end)
+
+rawGet(server, "/admin/callback", function(req, res)
+    local params = url.parse_query(req:uri())
+    if params.error then
+        return redirect(res, "/admin?error=auth_failed")
+    end
+    local code = url.strip_quotes(params.code)
+    local returnedState = url.strip_quotes(params.state)
+    local expectedState = admin.readCookie(req, admin.STATE_COOKIE)
+    if not code or not returnedState or not expectedState or returnedState ~= expectedState then
+        return redirect(res, "/admin?error=state_mismatch")
+    end
+
+    local accessToken, tokenErr = admin.exchangeCode(code)
+    if not accessToken then
+        print({ error = "admin_login_failed", reason = tokenErr })
+        return redirect(res, "/admin?error=auth_failed")
+    end
+    local user, userErr = admin.fetchUser(accessToken)
+    if not user then
+        print({ error = "admin_login_failed", reason = userErr })
+        return redirect(res, "/admin?error=auth_failed")
+    end
+    if user.email_verified == false then
+        return redirect(res, "/admin?error=unverified")
+    end
+    local email = admin.normalizeEmail(user.email)
+    if not email or not admin.findByEmail(email) then
+        print({ error = "admin_login_rejected", reason = "email_not_an_admin" })
+        return redirect(res, "/admin?error=not_allowed")
+    end
+
+    local session = admin.createSession(email)
+    if not session then
+        return redirect(res, "/admin?error=auth_failed")
+    end
+    admin.audit(email, "login")
+    res:set_header("Set-Cookie", admin.cookieHeader(admin.SESSION_COOKIE, session, admin.SESSION_TTL_SECONDS))
+    return redirect(res, "/admin")
+end)
+
+rawPost(server, "/admin/logout", adminOnly(function(req, res, ctx)
+    admin.destroySession(req)
+    admin.audit(ctx.email, "logout")
+    res:set_header("Set-Cookie", admin.cookieHeader(admin.SESSION_COOKIE, "", 0))
+    return {success = true}
+end, {mutating = true}))
+
+rawGet(server, "/admin/api/me", adminOnly(function(_, _, ctx)
+    return {
+        email = ctx.email,
+        admin_id = ctx.actor.id,
+        name = ctx.actor.name,
+        is_superadmin = ctx.actor.is_superadmin,
+        impersonating = ctx.impersonating,
+        real_name = ctx.real.name,
+        real_is_superadmin = ctx.real.is_superadmin,
+    }
+end))
+
+rawPost(server, "/admin/api/impersonate", adminOnly(function(req, res, ctx)
+    local target = jsonBody(req).id
+    if not admin.exists(target) then
+        return failure(res, 404, "Admin not found")
+    end
+    if not admin.setImpersonation(req, target) then
+        return failure(res, 500, "Couldn't start impersonating")
+    end
+    admin.audit(ctx.email, "impersonate.start", nil, "admin #" .. tostring(target))
+    return {success = true}
+end, {mutating = true, realSuperadmin = true}))
+
+rawPost(server, "/admin/api/impersonate/stop", adminOnly(function(req, res, ctx)
+    if not admin.setImpersonation(req, nil) then
+        return failure(res, 500, "Couldn't stop impersonating")
+    end
+    if ctx.impersonating then
+        admin.audit(ctx.email, "impersonate.stop", nil, "was viewing as " .. tostring(ctx.actor.name))
+    end
+    return {success = true}
+end, {mutating = true, realSuperadmin = true}))
+
+rawGet(server, "/admin/api/overview", adminOnly(function(_, res, ctx)
+    local overview = requestlog.overview(ownerScope(ctx))
+    if not overview then
+        return failure(res, 500, "Couldn't load overview")
+    end
+    return overview
+end))
+
+rawGet(server, "/admin/api/keys", adminOnly(function(_, res, ctx)
+    local keys = auth.listKeys(ownerScope(ctx))
+    if not keys then
+        return failure(res, 500, "Couldn't load keys")
+    end
+    if not ctx.actor.is_superadmin then
+        for _, key in ipairs(keys) do
+            key.key_suffix = nil
+            key.created_by_name = nil
+        end
+    end
+    return {keys = keys}
+end))
+
+rawPost(server, "/admin/api/keys/create", adminOnly(function(req, res, ctx)
+    local body = jsonBody(req)
+    local name = keyName(body.name)
+    if not name then
+        return failure(res, 400, "Name is required (max " .. MAX_KEY_NAME_LENGTH .. " characters)")
+    end
+
+    local owner = ctx.actor.id
+    if ctx.actor.is_superadmin then
+        if not auth.isValidPerms(body.perms) then
+            return failure(res, 400, "Perms must be read, write, or admin")
+        end
+        owner = validOwner(body.owner_id)
+        if owner == nil then
+            return failure(res, 400, "Owner must be one of your admins")
+        end
+    elseif not auth.isDelegablePerms(body.perms) then
+        return failure(res, 403, "You can only create read or write keys")
+    end
+
+    local created, err = auth.createKey(name, body.perms, owner, ctx.real.id)
+    if not created then
+        return failure(res, 500, err or "Failed to create key")
+    end
+    auditAs(ctx, "key.create", created, "perms: " .. created.perms)
+    return {id = created.id, name = created.name, perms = created.perms, key = created.key}
+end, {mutating = true}))
+
+rawPost(server, "/admin/api/keys/rotate", adminOnly(function(req, res, ctx)
+    local key = managedKey(ctx, jsonBody(req).id)
+    if not key then
+        return failure(res, 404, "Key not found")
+    end
+    local rotated = auth.rotateKeyById(key.id)
+    if not rotated then
+        return failure(res, 500, "Failed to rotate key")
+    end
+    auditAs(ctx, "key.rotate", rotated)
+    return {id = rotated.id, name = rotated.name, perms = rotated.perms, key = rotated.key}
+end, {mutating = true}))
+
+rawPost(server, "/admin/api/keys/perms", adminOnly(function(req, res, ctx)
+    local body = jsonBody(req)
+    local key = managedKey(ctx, body.id)
+    if not key then
+        return failure(res, 404, "Key not found")
+    end
+    if ctx.actor.is_superadmin then
+        if not auth.isValidPerms(body.perms) then
+            return failure(res, 400, "Perms must be read, write, or admin")
+        end
+    else
+        if key.perms == "admin" then
+            return failure(res, 403, "Only the superadmin can change an admin key's perms")
+        end
+        if not auth.isDelegablePerms(body.perms) then
+            return failure(res, 403, "You can only set read or write")
+        end
+    end
+    local updated = auth.setPermsById(key.id, body.perms)
+    if not updated then
+        return failure(res, 500, "Failed to update perms")
+    end
+    auditAs(ctx, "key.perms", updated, tostring(updated.old_perms) .. " -> " .. updated.perms)
+    return {id = updated.id, name = updated.name, perms = updated.perms}
+end, {mutating = true}))
+
+rawPost(server, "/admin/api/keys/rename", adminOnly(function(req, res, ctx)
+    local body = jsonBody(req)
+    local name = keyName(body.name)
+    if not name then
+        return failure(res, 400, "Name is required (max " .. MAX_KEY_NAME_LENGTH .. " characters)")
+    end
+    local key = managedKey(ctx, body.id)
+    if not key then
+        return failure(res, 404, "Key not found")
+    end
+    local renamed = auth.renameKeyById(key.id, name)
+    if not renamed then
+        return failure(res, 500, "Failed to rename key")
+    end
+    auditAs(ctx, "key.rename", renamed, tostring(renamed.old_name) .. " -> " .. renamed.name)
+    return {id = renamed.id, name = renamed.name, perms = renamed.perms}
+end, {mutating = true}))
+
+rawPost(server, "/admin/api/keys/delete", adminOnly(function(req, res, ctx)
+    local key = managedKey(ctx, jsonBody(req).id)
+    if not key then
+        return failure(res, 404, "Key not found")
+    end
+    local deleted = auth.deleteKeyById(key.id)
+    if not deleted then
+        return failure(res, 500, "Failed to delete key")
+    end
+    auditAs(ctx, "key.delete", deleted, "perms: " .. deleted.perms)
+    return {success = true, id = deleted.id}
+end, {mutating = true}))
+
+rawPost(server, "/admin/api/keys/owner", adminOnly(function(req, res, ctx)
+    local body = jsonBody(req)
+    local owner = validOwner(body.owner_id)
+    if owner == nil then
+        return failure(res, 400, "Owner must be one of your admins")
+    end
+    local updated, err = auth.setOwnerById(body.id, owner)
+    if not updated then
+        return failure(res, err == "invalid_id" and 400 or 404, "Key not found")
+    end
+    auditAs(ctx, "key.owner", updated, owner == "" and "unassigned" or ("admin #" .. owner))
+    return {id = updated.id, owner_admin_id = updated.owner_admin_id}
+end, {mutating = true, superadmin = true}))
+
+rawPost(server, "/admin/api/keys/reveal", adminOnly(function(req, res, ctx)
+    local revealed = auth.revealKeyById(jsonBody(req).id)
+    if not revealed then
+        return failure(res, 404, "Key not found")
+    end
+    auditAs(ctx, "key.reveal", revealed)
+    return {id = revealed.id, name = revealed.name, perms = revealed.perms, key = revealed.key}
+end, {mutating = true, superadmin = true}))
+
+rawGet(server, "/admin/api/requests", adminOnly(function(req, res, ctx)
+    local params = url.parse_query(req:uri())
+    local rows, limit = requestlog.list({
+        owner = ownerScope(ctx),
+        key = url.strip_quotes(params.key),
+        status = url.strip_quotes(params.status),
+        path = url.strip_quotes(params.path),
+        before = url.strip_quotes(params.before),
+        limit = url.strip_quotes(params.limit),
+    })
+    if not rows then
+        return failure(res, 500, "Couldn't load requests")
+    end
+    local nextBefore = nil
+    if #rows == limit then
+        nextBefore = rows[#rows].id
+    end
+    return {requests = rows, next_before = nextBefore}
+end))
+
+rawGet(server, "/admin/api/audit", adminOnly(function(_, res)
+    local entries = admin.auditLog()
+    if not entries then
+        return failure(res, 500, "Couldn't load audit log")
+    end
+    return {entries = entries}
+end, {superadmin = true}))
+
+rawGet(server, "/admin/api/admins", adminOnly(function(_, res)
+    local admins = admin.listAdmins()
+    if not admins then
+        return failure(res, 500, "Couldn't load admins")
+    end
+    return {admins = admins}
+end, {superadmin = true}))
+
+rawPost(server, "/admin/api/admins/create", adminOnly(function(req, res, ctx)
+    local body = jsonBody(req)
+    local name = admin.normalizeName(body.name)
+    local email = admin.normalizeEmail(body.email)
+    if not name or not email then
+        return failure(res, 400, "A name and a valid email are required")
+    end
+    local created, err = admin.createAdmin(name, email)
+    if not created then
+        return failure(res, err == "email_taken" and 409 or 500, ADMIN_ERRORS[err] or "Failed to add admin")
+    end
+    auditAs(ctx, "admin.create", nil, created.name .. " <" .. email .. ">")
+    return {id = created.id, name = created.name}
+end, {mutating = true, superadmin = true}))
+
+rawPost(server, "/admin/api/admins/rename", adminOnly(function(req, res, ctx)
+    local body = jsonBody(req)
+    local name = admin.normalizeName(body.name)
+    if not name then
+        return failure(res, 400, "A name is required")
+    end
+    local renamed = admin.renameAdmin(body.id, name)
+    if not renamed then
+        return failure(res, 404, "Admin not found")
+    end
+    auditAs(ctx, "admin.rename", nil, "admin #" .. tostring(renamed.id) .. " -> " .. renamed.name)
+    return {id = renamed.id, name = renamed.name}
+end, {mutating = true, superadmin = true}))
+
+rawPost(server, "/admin/api/admins/delete", adminOnly(function(req, res, ctx)
+    local removed = admin.removeAdmin(jsonBody(req).id)
+    if not removed then
+        return failure(res, 404, "Admin not found (the superadmin can't be removed)")
+    end
+    auditAs(ctx, "admin.delete", nil, removed.name)
+    return {success = true, id = removed.id}
+end, {mutating = true, superadmin = true}))
+
+rawPost(server, "/admin/api/admins/emails/add", adminOnly(function(req, res, ctx)
+    local body = jsonBody(req)
+    local email = admin.normalizeEmail(body.email)
+    if not email then
+        return failure(res, 400, "A valid email is required")
+    end
+    local added, err = admin.addEmail(body.id, email)
+    if not added then
+        return failure(res, err == "email_taken" and 409 or 404, ADMIN_ERRORS[err] or "Admin not found")
+    end
+    auditAs(ctx, "admin.email.add", nil, email .. " -> admin #" .. tostring(added.admin_id))
+    return {email = added.email, admin_id = added.admin_id}
+end, {mutating = true, superadmin = true}))
+
+rawPost(server, "/admin/api/admins/emails/remove", adminOnly(function(req, res, ctx)
+    local email = admin.normalizeEmail(jsonBody(req).email)
+    if not email then
+        return failure(res, 400, "A valid email is required")
+    end
+    local removed, err = admin.removeEmail(email)
+    if not removed then
+        return failure(res, 409, ADMIN_ERRORS[err] or "Couldn't remove that email")
+    end
+    auditAs(ctx, "admin.email.remove", nil, email .. " from admin #" .. tostring(removed.admin_id))
+    return {success = true}
+end, {mutating = true, superadmin = true}))
+
+db.migrate()
+spawn_interval(function()
+    requestlog.prune(REQUEST_LOG_RETENTION_DAYS)
+    admin.pruneSessions()
+end, HOUR_MS)
 
 server.port = os.getenv("PORT")
 server.hostname = os.getenv("HOST")
