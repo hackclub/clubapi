@@ -29,7 +29,7 @@ The admin panel lives at `/admin`. Sign-in uses [Hack Club Auth](https://auth.ha
 
 ### Setup
 
-1. Create an app at https://auth.hackclub.com/developer/apps with the redirect URI `<PUBLIC_URL>/admin/callback` (for production, `https://clubapi.hackclub.com/admin/callback`) and the `email` scope.
+1. Create an app at https://auth.hackclub.com/developer/apps with the redirect URI `<PUBLIC_URL>/admin/callback` (for production, `https://clubapi.hackclub.com/admin/callback`) and the `openid` and `email` scopes.
 2. Set these environment variables:
 
 | Variable | Description |
