@@ -54,7 +54,7 @@ paths:
       description: |
         Returns every club with fuzzed coordinates for map display.
         Fully public, no authentication supported or required.
-        Responses are cached server-side for up to 45 seconds.
+        Data is refreshed from Airtable in the background about once a minute, so it can be up to a few minutes old.
       security: []
       responses:
         '200':

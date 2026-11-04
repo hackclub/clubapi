@@ -1,4 +1,5 @@
 local server = require("http").server.new()
+local _, astraTasks = pcall(require, "utils")
 local fs = require("fs")
 local clock = require("datetime")
 local airtable = require("utils/airtable")
@@ -51,11 +52,69 @@ local function unauthorized(res)
     return {error = "Unauthorized"}
 end
 
-local CLUBS_MAP_CACHE_TTL_SECONDS = 45
-local clubsMapCache = { data = nil, expiresAt = 0 }
+local CLUBS_REFRESH_INTERVAL_MS = 60 * 1000
+local CLUBS_MAX_STALENESS_SECONDS = 5 * 60
+local CLUBS_MAP_FIELDS = {"club_name", "venue_lat", "venue_lng", "status", "club_website"}
+local clubsSnapshot = { map = nil, refreshedAt = 0, refreshing = false }
 
 local COUNT_CACHE_TTL_SECONDS = 60
-local countCache = { clubs = {}, country = {}, level = {} }
+local countCache = { country = {}, level = {} }
+
+local function fetchClubsMap()
+    local result = {}
+    local offset = nil
+    repeat
+        local data = airtable.list_records("Clubs", nil, {fields = CLUBS_MAP_FIELDS, offset = offset})
+        if not data or not data.records then
+            return nil
+        end
+        for _, club in ipairs(data.records) do
+            local clubFields = {
+                club_name = club.fields.club_name,
+                venue_lat_fuzz = fuzzCoord(club.fields.venue_lat),
+                venue_lng_fuzz = fuzzCoord(club.fields.venue_lng),
+                club_status = club.fields.status
+            }
+            if club.fields.club_website then
+                clubFields.club_website = club.fields.club_website
+            end
+            table.insert(result, {
+                id = club.id,
+                fields = clubFields
+            })
+        end
+        offset = data.offset
+    until not offset
+    return result
+end
+
+local function loadClubsSnapshot()
+    local ok, map = pcall(fetchClubsMap)
+    if ok and map then
+        clubsSnapshot.map = map
+        clubsSnapshot.refreshedAt = os.time()
+    else
+        print({ error = "clubs_snapshot_refresh_failed", message = ok and "airtable_request_failed" or tostring(map) })
+    end
+end
+
+local function refreshClubsSnapshot()
+    if clubsSnapshot.refreshing then
+        return
+    end
+    clubsSnapshot.refreshing = true
+    loadClubsSnapshot()
+    clubsSnapshot.refreshing = false
+end
+
+local function currentClubsMap()
+    if not clubsSnapshot.map then
+        loadClubsSnapshot()
+    elseif os.time() - clubsSnapshot.refreshedAt > CLUBS_MAX_STALENESS_SECONDS then
+        refreshClubsSnapshot()
+    end
+    return clubsSnapshot.map
+end
 
 local function cachedCount(bucket, key, computeFn)
     local now = os.time()
@@ -233,51 +292,14 @@ server:static_file("/openapi.yaml", "openapi.yaml")
 
 server:get("/clubs", function(req)
     log.request(req:uri(), req:headers())
-    local total = cachedCount(countCache.clubs, "total", function()
-        return airtable.count_records("Clubs")
-    end)
-    return {totalClubs = total}
+    local map = currentClubsMap()
+    return {totalClubs = map and #map or nil}
 end)
 
 server:get("/clubs/map", function(req, res)
     log.request(req:uri(), req:headers())
     res:set_header("Access-Control-Allow-Origin", "*")
-
-    local now = os.time()
-    if clubsMapCache.data and now < clubsMapCache.expiresAt then
-        return clubsMapCache.data
-    end
-
-    local fields = {"club_name", "venue_lat", "venue_lng", "status", "club_website"}
-    local result = {}
-    local offset = nil
-    repeat
-        local data = airtable.list_records("Clubs", nil, {fields = fields, offset = offset})
-        if data and data.records then
-            for _, club in ipairs(data.records) do
-                local clubFields = {
-                    club_name = club.fields.club_name,
-                    venue_lat_fuzz = fuzzCoord(club.fields.venue_lat),
-                    venue_lng_fuzz = fuzzCoord(club.fields.venue_lng),
-                    club_status = club.fields.status
-                }
-                if club.fields.club_website then
-                    clubFields.club_website = club.fields.club_website
-                end
-                table.insert(result, {
-                    id = club.id,
-                    fields = clubFields
-                })
-            end
-            offset = data.offset
-        else
-            offset = nil
-        end
-    until not offset
-
-    clubsMapCache.data = result
-    clubsMapCache.expiresAt = now + CLUBS_MAP_CACHE_TTL_SECONDS
-    return result
+    return currentClubsMap() or {}
 end)
 
 server:get("/clubs/country", function(req)
@@ -1391,6 +1413,12 @@ end, {mutating = true, superadmin = true}))
 
 db.migrate()
 pruneExpiredData()
+local intervalOk, intervalErr = pcall(function()
+    astraTasks.spawn_interval(refreshClubsSnapshot, CLUBS_REFRESH_INTERVAL_MS)
+end)
+if not intervalOk then
+    print({ error = "clubs_refresh_interval_failed", message = tostring(intervalErr) })
+end
 
 server.port = os.getenv("PORT")
 server.hostname = os.getenv("HOST")
