@@ -1072,15 +1072,19 @@ rawGet(server, "/admin/callback", function(req, res)
         return redirect(res, "/admin?error=state_mismatch")
     end
 
-    local accessToken, tokenErr = admin.exchangeCode(code)
+    local accessToken, idTokenOrErr = admin.exchangeCode(code)
     if not accessToken then
-        print({ error = "admin_login_failed", reason = tokenErr })
+        print({ error = "admin_login_failed", reason = idTokenOrErr })
         return redirect(res, "/admin?error=auth_failed")
     end
-    local user, userErr = admin.fetchUser(accessToken)
+    local user, claimsErr = admin.claimsFromIdToken(idTokenOrErr)
     if not user then
-        print({ error = "admin_login_failed", reason = userErr })
-        return redirect(res, "/admin?error=auth_failed")
+        local userErr
+        user, userErr = admin.fetchUser(accessToken)
+        if not user then
+            print({ error = "admin_login_failed", reason = userErr, id_token = claimsErr })
+            return redirect(res, "/admin?error=auth_failed")
+        end
     end
     if user.email_verified == false then
         return redirect(res, "/admin?error=unverified")

@@ -1,9 +1,11 @@
 local http = require("http")
 local json = require("serde").json
+local crypto = require("crypto")
 local db = require("utils/db")
 
 local admin = {}
 
+local HCA_ISSUER = "https://auth.hackclub.com"
 local HCA_AUTHORIZE_URL = "https://auth.hackclub.com/oauth/authorize"
 local HCA_TOKEN_URL = "https://auth.hackclub.com/oauth/token"
 local HCA_USERINFO_URL = "https://auth.hackclub.com/oauth/userinfo"
@@ -361,7 +363,55 @@ function admin.exchangeCode(code)
     if not body or type(body.access_token) ~= "string" then
         return nil, "token_response_invalid"
     end
-    return body.access_token
+    return body.access_token, body.id_token
+end
+
+local function base64UrlDecode(segment)
+    local padded = segment .. string.rep("=", (4 - #segment % 4) % 4)
+    local ok, decoded = pcall(crypto.base64.decode_urlsafe, padded)
+    if ok and type(decoded) == "string" then
+        return decoded
+    end
+    return nil
+end
+
+local function audienceMatches(aud, clientId)
+    if aud == clientId then
+        return true
+    end
+    if type(aud) == "table" then
+        for _, value in ipairs(aud) do
+            if value == clientId then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+function admin.claimsFromIdToken(idToken)
+    if type(idToken) ~= "string" then
+        return nil, "id_token_missing"
+    end
+    local payload = idToken:match("^[%w%-_]+%.([%w%-_]+)%.[%w%-_]+$")
+    local decoded = payload and base64UrlDecode(payload)
+    if not decoded then
+        return nil, "id_token_malformed"
+    end
+    local ok, claims = pcall(json.decode, decoded)
+    if not ok or type(claims) ~= "table" then
+        return nil, "id_token_malformed"
+    end
+    if claims.iss ~= HCA_ISSUER or not audienceMatches(claims.aud, os.getenv("HCA_CLIENT_ID")) then
+        return nil, "id_token_wrong_issuer_or_audience"
+    end
+    if tonumber(claims.exp) == nil or tonumber(claims.exp) < os.time() then
+        return nil, "id_token_expired"
+    end
+    if type(claims.email) ~= "string" then
+        return nil, "id_token_missing_email"
+    end
+    return claims
 end
 
 function admin.fetchUser(accessToken)
@@ -375,8 +425,13 @@ function admin.fetchUser(accessToken)
     if not ok or not res then
         return nil, "userinfo_request_failed"
     end
-    if res:status_code() ~= 200 then
-        return nil, "userinfo_rejected"
+    local status = res:status_code()
+    if status ~= 200 then
+        local bodyText = ""
+        pcall(function()
+            bodyText = res:body():text() or ""
+        end)
+        return nil, "userinfo_rejected (status " .. tostring(status) .. "): " .. bodyText:sub(1, 300)
     end
     local body = decodeBody(res)
     if not body or type(body.email) ~= "string" then
