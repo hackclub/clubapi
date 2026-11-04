@@ -161,6 +161,27 @@ function airtable.list_records(table_name, view, params)
 	return ok2 and dec or nil
 end
 
+function airtable.list_all_records(table_name, view, params)
+	local records = {}
+	local offset = nil
+	repeat
+		local page_params = {}
+		for k, v in pairs(params or {}) do
+			page_params[k] = v
+		end
+		page_params.offset = offset
+		local page = airtable.list_records(table_name, view, page_params)
+		if not page or not page.records then
+			return nil
+		end
+		for _, record in ipairs(page.records) do
+			table.insert(records, record)
+		end
+		offset = page.offset
+	until not offset
+	return { records = records }
+end
+
 function airtable.get_record(table_name, record_id)
 	if type(table_name) ~= "string" or table_name == "" then
 		print({ error = "invalid_table_name", provided = table_name })

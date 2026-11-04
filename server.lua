@@ -486,8 +486,8 @@ server:get("/ships", function(req, res)
         return {error = "Missing club_name parameter"}
     end
     local memberFormula = airtable.safeFormula("club_name (from rel_club)", params.club_name)
-    local memberResult = airtable.list_records("Members", nil, {filterByFormula = memberFormula, fields = {"email"}})
-    if not memberResult or not memberResult.records then
+    local memberResult = airtable.list_all_records("Members", nil, {filterByFormula = memberFormula, fields = {"email"}})
+    if not memberResult then
         return {error = "Failed to look up club members"}
     end
     local emails = {}
@@ -500,15 +500,22 @@ server:get("/ships", function(req, res)
         return {}
     end
     local formula = orFormula("Email", emails)
+    local shipParams = {filterByFormula = formula, timeZone = "America/New_York"}
     if auth.checkRead(req:headers().authorization) then
-        local ships = airtable.list_records("Unified DB Projects", nil, {filterByFormula = formula, timeZone = "America/New_York"}).records
-        return ships
+        local ships = airtable.list_all_records("Unified DB Projects", nil, shipParams)
+        if not ships then
+            return {error = "Failed to look up ships"}
+        end
+        return ships.records
     elseif keyProvided(req) then
         return unauthorized(res)
     else
-        local fields = {"YSWS", "Code URL", "Playable URL"}
-        local ships = airtable.list_records("Unified DB Projects", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields}).records
-        return ships
+        shipParams.fields = {"YSWS", "Code URL", "Playable URL"}
+        local ships = airtable.list_all_records("Unified DB Projects", nil, shipParams)
+        if not ships then
+            return {error = "Failed to look up ships"}
+        end
+        return ships.records
     end
 end)
 
@@ -522,8 +529,11 @@ server:get("/member/ships", function(req, res)
             return {error = "Missing email parameter"}
         end
         local formula = airtable.safeFormula("Email", params.email)
-        local ships = airtable.list_records("Unified DB Projects", nil, {filterByFormula = formula, timeZone = "America/New_York"}).records
-        return ships
+        local ships = airtable.list_all_records("Unified DB Projects", nil, {filterByFormula = formula, timeZone = "America/New_York"})
+        if not ships then
+            return {error = "Failed to look up ships"}
+        end
+        return ships.records
     else
         return unauthorized(res)
     end
@@ -685,13 +695,14 @@ server:get("/members", function(req, res)
             return {error = "Club not found"}
         end
         local memberFormula = airtable.safeFormula("club_name (from rel_club)", params.club_name)
-        local memberResult = airtable.list_records("Members", nil, {filterByFormula = memberFormula, fields = {"name"}})
+        local memberResult = airtable.list_all_records("Members", nil, {filterByFormula = memberFormula, fields = {"name"}})
+        if not memberResult then
+            return {error = "Failed to look up club members"}
+        end
         local memberNames = {}
-        if memberResult and memberResult.records then
-            for _, member in ipairs(memberResult.records) do
-                if member.fields.name then
-                    table.insert(memberNames, member.fields.name)
-                end
+        for _, member in ipairs(memberResult.records) do
+            if member.fields.name then
+                table.insert(memberNames, member.fields.name)
             end
         end
         return {members = memberNames}
