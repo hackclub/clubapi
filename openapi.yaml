@@ -950,7 +950,7 @@ paths:
 
   /person:
     get:
-      summary: Look up everything about a person's club involvement in one call
+      summary: Get person's clubs
       description: |
         Combines `/leader`, `/leader/slack`, `/member/email`, `/member/slack`, `/member/name` and `/club` into one request.
         Pass a Slack ID and/or one or more emails. Leader and member results are reported separately for each identifier so mismatches stay visible,
