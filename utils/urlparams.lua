@@ -10,7 +10,7 @@ function url.parse_query(uri)
 
     local params = {}
 
-    local preservePlus = {email = true, new_email = true, old_email = true, message = true}
+    local preservePlus = {email = true, emails = true, new_email = true, old_email = true, message = true}
 
     for key, value in query:gmatch("([^&=?]+)=([^&=?]+)") do
         -- decode percent encoding if needed

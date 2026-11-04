@@ -649,18 +649,49 @@ local function firstMatching(records, field, value)
     return nil
 end
 
-local function eitherFormula(emailField, email, slackField, slackId)
-    local parts = {}
-    if email then
-        table.insert(parts, airtable.safeFormula(emailField, email))
+local MAX_PERSON_EMAILS = 20
+
+local function firstString(value)
+    if type(value) == "table" then
+        value = value[1]
     end
-    if slackId then
-        table.insert(parts, airtable.safeFormula(slackField, slackId))
+    if type(value) == "string" and value ~= "" then
+        return value
+    end
+    return nil
+end
+
+local function anyOfFormula(conditions)
+    local parts = {}
+    for _, condition in ipairs(conditions) do
+        table.insert(parts, airtable.safeFormula(condition[1], condition[2]))
     end
     if #parts == 1 then
         return parts[1]
     end
     return "OR(" .. table.concat(parts, ", ") .. ")"
+end
+
+local function personEmails(params)
+    local emails = {}
+    local seen = {}
+    local raw = {}
+    if params.email then
+        table.insert(raw, url.strip_quotes(params.email))
+    end
+    if params.emails then
+        for entry in url.strip_quotes(params.emails):gmatch("[^,]+") do
+            table.insert(raw, entry)
+        end
+    end
+    for _, entry in ipairs(raw) do
+        local email = entry:gsub("^%s+", ""):gsub("%s+$", "")
+        if email ~= "" and not seen[email:lower()] then
+            seen[email:lower()] = true
+            table.insert(emails, email)
+        end
+    end
+    return emails
 end
 
 server:get("/person", function(req, res)
@@ -669,63 +700,141 @@ server:get("/person", function(req, res)
         return unauthorized(res)
     end
     local params = url.parse_query(req:uri())
-    local email = params.email and url.strip_quotes(params.email) or nil
+    local emails = personEmails(params)
     local slackId = params.slackid and url.strip_quotes(params.slackid) or nil
-    if not email and not slackId then
+    if slackId == "" then
+        slackId = nil
+    end
+    if #emails == 0 and not slackId then
         res:set_status_code(400)
-        return {error = "Provide an email parameter, a slackid parameter, or both"}
+        return {error = "Provide a slackid, an email, or a comma-separated emails list"}
+    end
+    if #emails > MAX_PERSON_EMAILS then
+        res:set_status_code(400)
+        return {error = "At most " .. MAX_PERSON_EMAILS .. " emails per request"}
+    end
+
+    local leaderConditions = {}
+    local memberConditions = {}
+    if slackId then
+        table.insert(leaderConditions, {"contact_slack", slackId})
+        table.insert(memberConditions, {"contact_slack", slackId})
+    end
+    for _, email in ipairs(emails) do
+        table.insert(leaderConditions, {"contact_email", email})
+        table.insert(memberConditions, {"email", email})
     end
 
     local leaders = airtable.list_all_records("Leaders", nil, {
-        filterByFormula = eitherFormula("contact_email", email, "contact_slack", slackId),
+        filterByFormula = anyOfFormula(leaderConditions),
         timeZone = "America/New_York",
-        fields = {"contact_email", "contact_slack", "rel_clubs"},
+        fields = {"contact_email", "contact_slack", "club_name (from rel_clubs)"},
     })
     local members = airtable.list_all_records("Members", nil, {
-        filterByFormula = eitherFormula("email", email, "contact_slack", slackId),
+        filterByFormula = anyOfFormula(memberConditions),
         timeZone = "America/New_York",
-        fields = {"email", "contact_slack", "club_name (from rel_club)"},
+        fields = {"email", "contact_slack", "name", "club_name (from rel_club)"},
     })
     if not leaders or not members then
         res:set_status_code(502)
         return {error = "Failed to look up this person in Airtable"}
     end
 
-    local clubs = {}
-    local function leaderResult(record)
-        if not record then
-            return {found = false}
-        end
-        local clubId = record.fields.rel_clubs and record.fields.rel_clubs[1] or nil
-        if not clubId then
-            return {found = true}
-        end
-        if clubs[clubId] == nil then
-            clubs[clubId] = airtable.get_record("Clubs", clubId) or false
-        end
-        local club = clubs[clubId]
-        if not club then
-            return {found = true}
-        end
-        return {found = true, club_name = club.fields.club_name, club_status = club.fields.status}
+    local matches = {leader = {}, member = {}}
+    local function match(role, records, field, value, clubField)
+        local record = firstMatching(records, field, value)
+        local clubName = record and firstString(record.fields[clubField]) or nil
+        table.insert(matches[role], {record = record, clubName = clubName})
+        return #matches[role]
     end
 
-    local function memberResult(record)
-        if not record then
-            return {found = false}
-        end
-        local clubName = record.fields["club_name (from rel_club)"]
-        return {found = true, club_name = clubName and clubName[1] or nil}
-    end
-
-    local result = {leader = {}, member = {}}
-    if email then
-        result.leader.by_email = leaderResult(firstMatching(leaders.records, "contact_email", email))
-        result.member.by_email = memberResult(firstMatching(members.records, "email", email))
-    end
+    local leaderSlack, memberSlack
+    local leaderByEmail, memberByEmail = {}, {}
     if slackId then
-        result.leader.by_slack = leaderResult(firstMatching(leaders.records, "contact_slack", slackId))
-        result.member.by_slack = memberResult(firstMatching(members.records, "contact_slack", slackId))
+        leaderSlack = match("leader", leaders.records, "contact_slack", slackId, "club_name (from rel_clubs)")
+        memberSlack = match("member", members.records, "contact_slack", slackId, "club_name (from rel_club)")
+    end
+    for _, email in ipairs(emails) do
+        leaderByEmail[email] = match("leader", leaders.records, "contact_email", email, "club_name (from rel_clubs)")
+        memberByEmail[email] = match("member", members.records, "email", email, "club_name (from rel_club)")
+    end
+
+    local clubNames = {}
+    local clubNameSeen = {}
+    for _, role in ipairs({"leader", "member"}) do
+        for _, found in ipairs(matches[role]) do
+            if found.clubName and not clubNameSeen[found.clubName:lower()] then
+                clubNameSeen[found.clubName:lower()] = true
+                table.insert(clubNames, found.clubName)
+            end
+        end
+    end
+
+    local clubsByName = {}
+    if #clubNames > 0 then
+        local clubConditions = {}
+        for _, name in ipairs(clubNames) do
+            table.insert(clubConditions, {"club_name", name})
+        end
+        local clubRecords = airtable.list_all_records("Clubs", nil, {
+            filterByFormula = anyOfFormula(clubConditions),
+            timeZone = "America/New_York",
+        })
+        if not clubRecords then
+            res:set_status_code(502)
+            return {error = "Failed to look up this person's clubs in Airtable"}
+        end
+        for _, record in ipairs(clubRecords.records) do
+            local name = firstString(record.fields.club_name)
+            if name and not clubsByName[name:lower()] then
+                clubsByName[name:lower()] = record
+            end
+        end
+    end
+
+    local function leaderResult(index)
+        local found = matches.leader[index]
+        if not found.record then
+            return {found = false}
+        end
+        local club = found.clubName and clubsByName[found.clubName:lower()] or nil
+        return {
+            found = true,
+            club_name = found.clubName,
+            club_status = club and club.fields.status or nil,
+        }
+    end
+
+    local function memberResult(index)
+        local found = matches.member[index]
+        if not found.record then
+            return {found = false}
+        end
+        return {found = true, club_name = found.clubName}
+    end
+
+    local result = {leader = {}, member = {}, clubs = {}}
+    if slackId then
+        result.leader.by_slack = leaderResult(leaderSlack)
+        result.member.by_slack = memberResult(memberSlack)
+    end
+    if #emails > 0 then
+        result.leader.by_email = {}
+        result.member.by_email = {}
+        for _, email in ipairs(emails) do
+            result.leader.by_email[email] = leaderResult(leaderByEmail[email])
+            result.member.by_email[email] = memberResult(memberByEmail[email])
+            local member = matches.member[memberByEmail[email]]
+            if not result.member_name and member.record and member.clubName then
+                result.member_name = member.record.fields.name
+            end
+        end
+    end
+    for _, name in ipairs(clubNames) do
+        local record = clubsByName[name:lower()]
+        if record then
+            result.clubs[name] = record
+        end
     end
     return result
 end)

@@ -950,22 +950,15 @@ paths:
 
   /person:
     get:
-      summary: Check whether someone is a leader or member, by email and Slack ID
+      summary: Look up everything about a person's club involvement in one call
       description: |
-        Combines `/leader`, `/leader/slack`, `/member/email` and `/member/slack` into one request.
-        Pass an email, a Slack ID, or both; results are reported separately for each identifier so mismatches stay visible.
+        Combines `/leader`, `/leader/slack`, `/member/email`, `/member/slack`, `/member/name` and `/club` into one request.
+        Pass a Slack ID and/or one or more emails. Leader and member results are reported separately for each identifier so mismatches stay visible,
+        and every matched club's full record is included under `clubs`, keyed by club name (same shape as `/club`).
         Matching ignores case. Requires Read permissions.
       security:
         - ApiKeyAuth: []
       parameters:
-        - in: query
-          name: email
-          schema:
-            type: string
-            format: email
-          required: false
-          description: Email to look up
-          example: "leader@example.com"
         - in: query
           name: slackid
           schema:
@@ -973,9 +966,23 @@ paths:
           required: false
           description: Slack ID to look up
           example: "U01ABCDEFGH"
+        - in: query
+          name: emails
+          schema:
+            type: string
+          required: false
+          description: Comma-separated emails to look up (up to 20)
+          example: "leader@example.com,leader.personal@example.com"
+        - in: query
+          name: email
+          schema:
+            type: string
+            format: email
+          required: false
+          description: A single email to look up; combined with `emails` if both are given
       responses:
         '200':
-          description: Leader and member matches for each identifier provided. A key is only present for identifiers you passed.
+          description: Matches for each identifier provided, the member's registered name, and the matched clubs' records.
           content:
             application/json:
               schema:
@@ -984,26 +991,44 @@ paths:
                   leader:
                     type: object
                     properties:
-                      by_email:
-                        $ref: '#/components/schemas/PersonLeaderMatch'
                       by_slack:
                         $ref: '#/components/schemas/PersonLeaderMatch'
+                      by_email:
+                        type: object
+                        description: Keyed by email
+                        additionalProperties:
+                          $ref: '#/components/schemas/PersonLeaderMatch'
                   member:
                     type: object
                     properties:
-                      by_email:
-                        $ref: '#/components/schemas/PersonMemberMatch'
                       by_slack:
                         $ref: '#/components/schemas/PersonMemberMatch'
+                      by_email:
+                        type: object
+                        description: Keyed by email
+                        additionalProperties:
+                          $ref: '#/components/schemas/PersonMemberMatch'
+                  member_name:
+                    type: string
+                    description: Name on the first member record matched by email, if any (same as `/member/name`)
+                  clubs:
+                    type: object
+                    description: Full Airtable record for each matched club, keyed by club name (same shape as `/club`)
+                    additionalProperties:
+                      type: object
               example:
                 leader:
-                  by_email: { found: true, club_name: "Example High School", club_status: "Active" }
                   by_slack: { found: true, club_name: "Example High School", club_status: "Active" }
+                  by_email:
+                    leader@example.com: { found: true, club_name: "Example High School", club_status: "Active" }
                 member:
-                  by_email: { found: false }
                   by_slack: { found: false }
+                  by_email:
+                    leader@example.com: { found: false }
+                clubs:
+                  Example High School: { id: "recXXXXXXXXXXXXXX", createdTime: "2025-09-01T12:00:00.000Z", fields: { club_name: "Example High School", status: "Active" } }
         '400':
-          description: Neither email nor slackid was provided
+          description: No identifiers provided, or more than 20 emails
           content:
             application/json:
               schema:
@@ -1011,7 +1036,7 @@ paths:
                 properties:
                   error:
                     type: string
-                    example: "Provide an email parameter, a slackid parameter, or both"
+                    example: "Provide a slackid, an email, or a comma-separated emails list"
         '401':
           description: Unauthorized
           content:
