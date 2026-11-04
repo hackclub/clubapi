@@ -620,6 +620,116 @@ server:get("/member/slack", function(req, res)
     end
 end)
 
+-- PERSON LOOKUP
+
+local function fieldMatches(value, target)
+    if type(value) == "string" then
+        return value:lower() == target
+    end
+    if type(value) == "table" then
+        for _, item in ipairs(value) do
+            if type(item) == "string" and item:lower() == target then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function firstMatching(records, field, value)
+    if not value then
+        return nil
+    end
+    local target = value:lower()
+    for _, record in ipairs(records) do
+        if fieldMatches(record.fields[field], target) then
+            return record
+        end
+    end
+    return nil
+end
+
+local function eitherFormula(emailField, email, slackField, slackId)
+    local parts = {}
+    if email then
+        table.insert(parts, airtable.safeFormula(emailField, email))
+    end
+    if slackId then
+        table.insert(parts, airtable.safeFormula(slackField, slackId))
+    end
+    if #parts == 1 then
+        return parts[1]
+    end
+    return "OR(" .. table.concat(parts, ", ") .. ")"
+end
+
+server:get("/person", function(req, res)
+    log.request(req:uri(), req:headers())
+    if not auth.checkRead(req:headers().authorization) then
+        return unauthorized(res)
+    end
+    local params = url.parse_query(req:uri())
+    local email = params.email and url.strip_quotes(params.email) or nil
+    local slackId = params.slackid and url.strip_quotes(params.slackid) or nil
+    if not email and not slackId then
+        res:set_status_code(400)
+        return {error = "Provide an email parameter, a slackid parameter, or both"}
+    end
+
+    local leaders = airtable.list_all_records("Leaders", nil, {
+        filterByFormula = eitherFormula("contact_email", email, "contact_slack", slackId),
+        timeZone = "America/New_York",
+        fields = {"contact_email", "contact_slack", "rel_clubs"},
+    })
+    local members = airtable.list_all_records("Members", nil, {
+        filterByFormula = eitherFormula("email", email, "contact_slack", slackId),
+        timeZone = "America/New_York",
+        fields = {"email", "contact_slack", "club_name (from rel_club)"},
+    })
+    if not leaders or not members then
+        res:set_status_code(502)
+        return {error = "Failed to look up this person in Airtable"}
+    end
+
+    local clubs = {}
+    local function leaderResult(record)
+        if not record then
+            return {found = false}
+        end
+        local clubId = record.fields.rel_clubs and record.fields.rel_clubs[1] or nil
+        if not clubId then
+            return {found = true}
+        end
+        if clubs[clubId] == nil then
+            clubs[clubId] = airtable.get_record("Clubs", clubId) or false
+        end
+        local club = clubs[clubId]
+        if not club then
+            return {found = true}
+        end
+        return {found = true, club_name = club.fields.club_name, club_status = club.fields.status}
+    end
+
+    local function memberResult(record)
+        if not record then
+            return {found = false}
+        end
+        local clubName = record.fields["club_name (from rel_club)"]
+        return {found = true, club_name = clubName and clubName[1] or nil}
+    end
+
+    local result = {leader = {}, member = {}}
+    if email then
+        result.leader.by_email = leaderResult(firstMatching(leaders.records, "contact_email", email))
+        result.member.by_email = memberResult(firstMatching(members.records, "email", email))
+    end
+    if slackId then
+        result.leader.by_slack = leaderResult(firstMatching(leaders.records, "contact_slack", slackId))
+        result.member.by_slack = memberResult(firstMatching(members.records, "contact_slack", slackId))
+    end
+    return result
+end)
+
 server:delete("/member", function(req, res)
     log.request(req:uri(), req:headers())
     if auth.checkWrite(req:headers().authorization) then

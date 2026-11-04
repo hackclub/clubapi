@@ -12,6 +12,26 @@ components:
       type: apiKey
       in: header
       name: Authorization
+  schemas:
+    PersonLeaderMatch:
+      type: object
+      properties:
+        found:
+          type: boolean
+        club_name:
+          type: string
+          description: Present when found and the leader is linked to a club
+        club_status:
+          type: string
+          description: Present when found and the leader is linked to a club
+    PersonMemberMatch:
+      type: object
+      properties:
+        found:
+          type: boolean
+        club_name:
+          type: string
+          description: Present when found and the member is linked to a club
 security:
   - {}
   - ApiKeyAuth: []
@@ -927,6 +947,91 @@ paths:
                   error:
                     type: string
                     example: "Member not found"
+
+  /person:
+    get:
+      summary: Check whether someone is a leader or member, by email and Slack ID
+      description: |
+        Combines `/leader`, `/leader/slack`, `/member/email` and `/member/slack` into one request.
+        Pass an email, a Slack ID, or both; results are reported separately for each identifier so mismatches stay visible.
+        Matching ignores case. Requires Read permissions.
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - in: query
+          name: email
+          schema:
+            type: string
+            format: email
+          required: false
+          description: Email to look up
+          example: "leader@example.com"
+        - in: query
+          name: slackid
+          schema:
+            type: string
+          required: false
+          description: Slack ID to look up
+          example: "U01ABCDEFGH"
+      responses:
+        '200':
+          description: Leader and member matches for each identifier provided. A key is only present for identifiers you passed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  leader:
+                    type: object
+                    properties:
+                      by_email:
+                        $ref: '#/components/schemas/PersonLeaderMatch'
+                      by_slack:
+                        $ref: '#/components/schemas/PersonLeaderMatch'
+                  member:
+                    type: object
+                    properties:
+                      by_email:
+                        $ref: '#/components/schemas/PersonMemberMatch'
+                      by_slack:
+                        $ref: '#/components/schemas/PersonMemberMatch'
+              example:
+                leader:
+                  by_email: { found: true, club_name: "Example High School", club_status: "Active" }
+                  by_slack: { found: true, club_name: "Example High School", club_status: "Active" }
+                member:
+                  by_email: { found: false }
+                  by_slack: { found: false }
+        '400':
+          description: Neither email nor slackid was provided
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Provide an email parameter, a slackid parameter, or both"
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Unauthorized"
+        '502':
+          description: Airtable lookup failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: "Failed to look up this person in Airtable"
 
   /members:
     get:
