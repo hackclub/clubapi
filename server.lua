@@ -130,6 +130,20 @@ local function rateLimited(handler)
     end
 end
 
+local REQUEST_LOG_RETENTION_DAYS = tonumber(os.getenv("REQUEST_LOG_RETENTION_DAYS")) or 90
+local PRUNE_INTERVAL_SECONDS = 60 * 60
+local nextPruneAt = 0
+
+local function pruneExpiredData()
+    local now = os.time()
+    if now < nextPruneAt then
+        return
+    end
+    nextPruneAt = now + PRUNE_INTERVAL_SECONDS
+    requestlog.prune(REQUEST_LOG_RETENTION_DAYS)
+    admin.pruneSessions()
+end
+
 local function nowMs()
     return clock.new():get_epoch_milliseconds()
 end
@@ -179,6 +193,8 @@ local function recorded(handler)
             duration_ms = nowMs() - started,
             ip = clientIp(req),
         })
+
+        pcall(pruneExpiredData)
 
         if not ok then
             error(result, 0)
@@ -913,8 +929,6 @@ end)
 
 local ADMIN_REQUEST_HEADER = "clubapi-admin"
 local MAX_KEY_NAME_LENGTH = 200
-local REQUEST_LOG_RETENTION_DAYS = tonumber(os.getenv("REQUEST_LOG_RETENTION_DAYS")) or 90
-local HOUR_MS = 60 * 60 * 1000
 
 local ADMIN_ERRORS = {
     email_taken = "That email already belongs to an admin",
@@ -1372,10 +1386,7 @@ rawPost(server, "/admin/api/admins/emails/remove", adminOnly(function(req, res, 
 end, {mutating = true, superadmin = true}))
 
 db.migrate()
-spawn_interval(function()
-    requestlog.prune(REQUEST_LOG_RETENTION_DAYS)
-    admin.pruneSessions()
-end, HOUR_MS)
+pruneExpiredData()
 
 server.port = os.getenv("PORT")
 server.hostname = os.getenv("HOST")
