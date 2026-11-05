@@ -54,21 +54,25 @@ end
 
 local CLUBS_REFRESH_INTERVAL_MS = 60 * 1000
 local CLUBS_MAX_STALENESS_SECONDS = 5 * 60
-local CLUBS_MAP_FIELDS = {"club_name", "venue_lat", "venue_lng", "status", "club_website"}
-local clubsSnapshot = { map = nil, refreshedAt = 0, refreshing = false }
+local clubsSnapshot = { map = nil, byName = nil, refreshedAt = 0, refreshing = false }
 
 local COUNT_CACHE_TTL_SECONDS = 60
 local countCache = { country = {}, level = {} }
 
 local function fetchClubsMap()
     local result = {}
+    local byName = {}
     local offset = nil
     repeat
-        local data = airtable.list_records("Clubs", nil, {fields = CLUBS_MAP_FIELDS, offset = offset})
+        local data = airtable.list_records("Clubs", nil, {offset = offset})
         if not data or not data.records then
             return nil
         end
         for _, club in ipairs(data.records) do
+            local name = type(club.fields.club_name) == "string" and club.fields.club_name:lower() or nil
+            if name and not byName[name] then
+                byName[name] = club
+            end
             local clubFields = {
                 club_name = club.fields.club_name,
                 venue_lat_fuzz = fuzzCoord(club.fields.venue_lat),
@@ -85,13 +89,14 @@ local function fetchClubsMap()
         end
         offset = data.offset
     until not offset
-    return result
+    return result, byName
 end
 
 local function loadClubsSnapshot()
-    local ok, map = pcall(fetchClubsMap)
+    local ok, map, byName = pcall(fetchClubsMap)
     if ok and map then
         clubsSnapshot.map = map
+        clubsSnapshot.byName = byName
         clubsSnapshot.refreshedAt = os.time()
     else
         print({ error = "clubs_snapshot_refresh_failed", message = ok and "airtable_request_failed" or tostring(map) })
@@ -114,6 +119,34 @@ local function currentClubsMap()
         refreshClubsSnapshot()
     end
     return clubsSnapshot.map
+end
+
+local function inParallel(jobs)
+    local results = {}
+    if type(astraTasks) == "table" and astraTasks.spawn_task then
+        local ok, err = pcall(function()
+            local handles = {}
+            for i, job in ipairs(jobs) do
+                handles[i] = astraTasks.spawn_task(function()
+                    results[i] = {value = job()}
+                end)
+            end
+            for _, handle in ipairs(handles) do
+                handle:await()
+            end
+        end)
+        if not ok then
+            print({ error = "parallel_jobs_failed", message = tostring(err) })
+        end
+    end
+    local values = {}
+    for i, job in ipairs(jobs) do
+        if not results[i] then
+            results[i] = {value = job()}
+        end
+        values[i] = results[i].value
+    end
+    return values
 end
 
 local function cachedCount(bucket, key, computeFn)
@@ -725,16 +758,23 @@ server:get("/person", function(req, res)
         table.insert(memberConditions, {"email", email})
     end
 
-    local leaders = airtable.list_all_records("Leaders", nil, {
-        filterByFormula = anyOfFormula(leaderConditions),
-        timeZone = "America/New_York",
-        fields = {"contact_email", "contact_slack", "club_name (from rel_clubs)"},
+    local lookups = inParallel({
+        function()
+            return airtable.list_all_records("Leaders", nil, {
+                filterByFormula = anyOfFormula(leaderConditions),
+                timeZone = "America/New_York",
+                fields = {"contact_email", "contact_slack", "club_name (from rel_clubs)"},
+            })
+        end,
+        function()
+            return airtable.list_all_records("Members", nil, {
+                filterByFormula = anyOfFormula(memberConditions),
+                timeZone = "America/New_York",
+                fields = {"email", "contact_slack", "name", "club_name (from rel_club)"},
+            })
+        end,
     })
-    local members = airtable.list_all_records("Members", nil, {
-        filterByFormula = anyOfFormula(memberConditions),
-        timeZone = "America/New_York",
-        fields = {"email", "contact_slack", "name", "club_name (from rel_club)"},
-    })
+    local leaders, members = lookups[1], lookups[2]
     if not leaders or not members then
         res:set_status_code(502)
         return {error = "Failed to look up this person in Airtable"}
@@ -771,9 +811,22 @@ server:get("/person", function(req, res)
     end
 
     local clubsByName = {}
+    local missingClubNames = {}
     if #clubNames > 0 then
-        local clubConditions = {}
+        local snapshotFresh = os.time() - clubsSnapshot.refreshedAt <= CLUBS_MAX_STALENESS_SECONDS
+        local snapshot = snapshotFresh and clubsSnapshot.byName or {}
         for _, name in ipairs(clubNames) do
+            local record = snapshot[name:lower()]
+            if record then
+                clubsByName[name:lower()] = record
+            else
+                table.insert(missingClubNames, name)
+            end
+        end
+    end
+    if #missingClubNames > 0 then
+        local clubConditions = {}
+        for _, name in ipairs(missingClubNames) do
             table.insert(clubConditions, {"club_name", name})
         end
         local clubRecords = airtable.list_all_records("Clubs", nil, {
@@ -1648,6 +1701,12 @@ local intervalOk, intervalErr = pcall(function()
 end)
 if not intervalOk then
     print({ error = "clubs_refresh_interval_failed", message = tostring(intervalErr) })
+end
+local warmupOk, warmupErr = pcall(function()
+    astraTasks.spawn_task(refreshClubsSnapshot)
+end)
+if not warmupOk then
+    print({ error = "clubs_snapshot_warmup_failed", message = tostring(warmupErr) })
 end
 
 server.port = os.getenv("PORT")
