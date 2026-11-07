@@ -88,29 +88,76 @@ end
 
 
 
-function airtable.list_records(table_name, view, params, base_override)
-	-- validate inputs
-	if type(table_name) ~= "string" or table_name == "" then
-		print({ error = "invalid_table_name", provided = table_name })
-		return nil
-	end
+local FAILURE = {}
 
+function airtable.isFailure(err)
+	return type(err) == "table" and err.kind == FAILURE
+end
+
+local function fail(details)
+	print(details)
+	error({ kind = FAILURE, details = details }, 0)
+end
+
+local function table_url(table_name, base_override)
+	if type(table_name) ~= "string" or table_name == "" then
+		fail({ error = "invalid_table_name", provided = table_name })
+	end
 	local base_id, err = get_base_id()
 	if base_override then
 		base_id, err = base_override, nil
 	end
 	if not base_id then
-		print({ error = "missing_base_id", message = err })
-		return nil
+		fail({ error = "missing_base_id", message = err })
 	end
+	return "https://api.airtable.com/v0/" .. base_id .. "/" .. table_name
+end
 
+local function record_url(table_name, record_id)
+	if type(record_id) ~= "string" or record_id == "" then
+		fail({ error = "invalid_record_id", provided = record_id })
+	end
+	return table_url(table_name) .. "/" .. record_id
+end
+
+local function send(fn, request, options)
 	local headers, herr = build_headers()
 	if not headers then
-		print({ error = "missing_headers", message = herr })
-		return nil
+		fail({ error = "missing_headers", fn = fn, message = herr })
+	end
+	request.headers = headers
+
+	local ok, res = pcall(function()
+		return http.request(request):execute()
+	end)
+	if not ok then
+		fail({ error = "request_exception", fn = fn, msg = res })
+	end
+	if not res then
+		fail({ error = "Airtable " .. fn .. " request failed", status = "no response" })
 	end
 
-	local url = "https://api.airtable.com/v0/" .. base_id .. "/" .. table_name .. "/listRecords"
+	local status = res:status_code()
+	local body_text = nil
+	local decoded, data = pcall(function()
+		body_text = res:body() and res:body():text() or nil
+		return body_text and json.decode(body_text) or nil
+	end)
+
+	if status == 404 and options and options.missing_ok then
+		return nil
+	end
+	if status >= 400 then
+		fail({ error = "Airtable " .. fn .. " request failed", status = status, body = body_text })
+	end
+	if not decoded or type(data) ~= "table" then
+		fail({ error = "Airtable " .. fn .. " returned invalid JSON", status = status })
+	end
+	return data
+end
+
+function airtable.list_records(table_name, view, params, base_override)
+	local url = table_url(table_name, base_override) .. "/listRecords"
 	local body = {}
 	if params and type(params) == "table" then
 		for k, v in pairs(params) do
@@ -119,8 +166,7 @@ function airtable.list_records(table_name, view, params, base_override)
 		if body.filterByFormula then
 			local valid, err = airtable.validateFormula(body.filterByFormula)
 			if not valid then
-				print({ error = "invalid_filter_formula", message = err })
-				return nil
+				fail({ error = "invalid_filter_formula", message = err })
 			end
 		end
 	end
@@ -128,40 +174,11 @@ function airtable.list_records(table_name, view, params, base_override)
 		body["view"] = view
 	end
 
-	local ok, res_or_err = pcall(function()
-		return http.request {
-			url = url,
-			method = "POST",
-			headers = headers,
-			body = json.encode(body)
-		}:execute()
-	end)
-
-	if not ok then
-		print({ error = "request_exception", fn = "list_records", msg = res_or_err })
-		return nil
+	local data = send("list_records", { url = url, method = "POST", body = json.encode(body) })
+	if type(data.records) ~= "table" then
+		fail({ error = "Airtable list_records returned no records list" })
 	end
-
-	local res = res_or_err
-
-	if not res then
-		print({ error = "Airtable list_records request failed", status = "no response", body = nil })
-		return nil
-	end
-
-	local status = res:status_code()
-	local body_text = nil
-	local ok2, dec = pcall(function()
-		body_text = res:body() and res:body():text() or nil
-		return body_text and json.decode(body_text) or nil
-	end)
-
-	if status >= 400 then
-		print({ error = "Airtable list_records request failed", status = status, body = body_text })
-		return ok2 and dec or nil
-	end
-
-	return ok2 and dec or nil
+	return data
 end
 
 function airtable.list_all_records(table_name, view, params, base_override)
@@ -174,9 +191,6 @@ function airtable.list_all_records(table_name, view, params, base_override)
 		end
 		page_params.offset = offset
 		local page = airtable.list_records(table_name, view, page_params, base_override)
-		if not page or not page.records then
-			return nil
-		end
 		for _, record in ipairs(page.records) do
 			table.insert(records, record)
 		end
@@ -186,290 +200,49 @@ function airtable.list_all_records(table_name, view, params, base_override)
 end
 
 function airtable.get_record(table_name, record_id)
-	if type(table_name) ~= "string" or table_name == "" then
-		print({ error = "invalid_table_name", provided = table_name })
-		return nil
-	end
-	if type(record_id) ~= "string" or record_id == "" then
-		print({ error = "invalid_record_id", provided = record_id })
-		return nil
-	end
-
-	local base_id, err = get_base_id()
-	if not base_id then
-		print({ error = "missing_base_id", message = err })
-		return nil
-	end
-
-	local headers, herr = build_headers()
-	if not headers then
-		print({ error = "missing_headers", message = herr })
-		return nil
-	end
-
-	local url = "https://api.airtable.com/v0/" .. base_id .. "/" .. table_name .. "/" .. record_id
-
-	local ok, res_or_err = pcall(function()
-		return http.request {
-			url = url,
-			method = "GET",
-			headers = headers
-		}:execute()
-	end)
-
-	if not ok then
-		print({ error = "request_exception", fn = "get_record", msg = res_or_err })
-		return nil
-	end
-
-	local res = res_or_err
-
-	if not res then
-		print({ error = "Airtable get_record request failed", status = "no response", body = nil })
-		return nil
-	end
-
-	local status = res:status_code()
-	local body_text = nil
-	local ok2, dec = pcall(function()
-		body_text = res:body() and res:body():text() or nil
-		return body_text and json.decode(body_text) or nil
-	end)
-
-	if status >= 400 then
-		print({ error = "Airtable get_record request failed", status = status, body = body_text })
-		return ok2 and dec or nil
-	end
-
-	return ok2 and dec or nil
+	return send("get_record", { url = record_url(table_name, record_id), method = "GET" }, { missing_ok = true })
 end
 
 function airtable.create_record(table_name, fields)
-	if type(table_name) ~= "string" or table_name == "" then
-		print({ error = "invalid_table_name", provided = table_name })
-		return nil
-	end
 	if type(fields) ~= "table" then
-		print({ error = "invalid_fields", provided = fields })
-		return nil
+		fail({ error = "invalid_fields", provided = fields })
 	end
-
-	local base_id, err = get_base_id()
-	if not base_id then
-		print({ error = "missing_base_id", message = err })
-		return nil
-	end
-
-	local headers, herr = build_headers()
-	if not headers then
-		print({ error = "missing_headers", message = herr })
-		return nil
-	end
-
-	local url = "https://api.airtable.com/v0/" .. base_id .. "/" .. table_name
-	local body = json.encode({fields = fields})
-
-	local ok, res_or_err = pcall(function()
-		return http.request {
-			url = url,
-			method = "POST",
-			headers = headers,
-			body = body
-		}:execute()
-	end)
-
-	if not ok then
-		print({ error = "request_exception", fn = "create_record", msg = res_or_err })
-		return nil
-	end
-
-	local res = res_or_err
-
-	if not res then
-		print({ error = "Airtable create_record request failed", status = "no response", body = nil })
-		return nil
-	end
-
-	local status = res:status_code()
-	local body_text = nil
-	local ok2, dec = pcall(function()
-		body_text = res:body() and res:body():text() or nil
-		return body_text and json.decode(body_text) or nil
-	end)
-
-	if status >= 400 then
-		print({ error = "Airtable create_record request failed", status = status, body = body_text })
-		return ok2 and dec or nil
-	end
-
-	return ok2 and dec or nil
+	return send("create_record", {
+		url = table_url(table_name),
+		method = "POST",
+		body = json.encode({fields = fields})
+	})
 end
 
 function airtable.update_record(table_name, record_id, fields)
-	if type(table_name) ~= "string" or table_name == "" then
-		print({ error = "invalid_table_name", provided = table_name })
-		return nil
-	end
-	if type(record_id) ~= "string" or record_id == "" then
-		print({ error = "invalid_record_id", provided = record_id })
-		return nil
-	end
 	if type(fields) ~= "table" then
-		print({ error = "invalid_fields", provided = fields })
-		return nil
+		fail({ error = "invalid_fields", provided = fields })
 	end
-
-	local base_id, err = get_base_id()
-	if not base_id then
-		print({ error = "missing_base_id", message = err })
-		return nil
-	end
-
-	local headers, herr = build_headers()
-	if not headers then
-		print({ error = "missing_headers", message = herr })
-		return nil
-	end
-
-	local url = "https://api.airtable.com/v0/" .. base_id .. "/" .. table_name .. "/" .. record_id
-	local body = json.encode({fields = fields})
-
-	local ok, res_or_err = pcall(function()
-		return http.request {
-			url = url,
-			method = "PATCH",
-			headers = headers,
-			body = body
-		}:execute()
-	end)
-
-	if not ok then
-		print({ error = "request_exception", fn = "update_record", msg = res_or_err })
-		return nil
-	end
-
-	local res = res_or_err
-
-	if not res then
-		print({ error = "Airtable update_record request failed", status = "no response", body = nil })
-		return nil
-	end
-
-	local status = res:status_code()
-	local body_text = nil
-	local ok2, dec = pcall(function()
-		body_text = res:body() and res:body():text() or nil
-		return body_text and json.decode(body_text) or nil
-	end)
-
-	if status >= 400 then
-		print({ error = "Airtable update_record request failed", status = status, body = body_text })
-		return ok2 and dec or nil
-	end
-
-	return ok2 and dec or nil
+	return send("update_record", {
+		url = record_url(table_name, record_id),
+		method = "PATCH",
+		body = json.encode({fields = fields})
+	})
 end
 
 function airtable.delete_record(table_name, record_id)
-	if type(table_name) ~= "string" or table_name == "" then
-		print({ error = "invalid_table_name", provided = table_name })
-		return nil
-	end
-	if type(record_id) ~= "string" or record_id == "" then
-		print({ error = "invalid_record_id", provided = record_id })
-		return nil
-	end
-
-	local base_id, err = get_base_id()
-	if not base_id then
-		print({ error = "missing_base_id", message = err })
-		return nil
-	end
-
-	local headers, herr = build_headers()
-	if not headers then
-		print({ error = "missing_headers", message = herr })
-		return nil
-	end
-
-	local url = "https://api.airtable.com/v0/" .. base_id .. "/" .. table_name .. "/" .. record_id
-
-	local ok, res_or_err = pcall(function()
-		return http.request {
-			url = url,
-			method = "DELETE",
-			headers = headers
-		}:execute()
-	end)
-
-	if not ok then
-		print({ error = "request_exception", fn = "delete_record", msg = res_or_err })
-		return nil
-	end
-
-	local res = res_or_err
-
-	if not res then
-		print({ error = "Airtable delete_record request failed", status = "no response", body = nil })
-		return nil
-	end
-
-	local status = res:status_code()
-	local body_text = nil
-	local ok2, dec = pcall(function()
-		body_text = res:body() and res:body():text() or nil
-		return body_text and json.decode(body_text) or nil
-	end)
-
-	if status >= 400 then
-		print({ error = "Airtable delete_record request failed", status = status, body = body_text })
-		return ok2 and dec or nil
-	end
-
-	return ok2 and dec or nil
+	return send("delete_record", { url = record_url(table_name, record_id), method = "DELETE" })
 end
 
-
-
 function airtable.count_records(table_name, filter_formula)
-	if type(table_name) ~= "string" or table_name == "" then
-		print({ error = "invalid_table_name", provided = table_name })
-		return nil
-	end
-
+	local params = { pageSize = 100 }
 	if filter_formula and type(filter_formula) == "string" and filter_formula ~= "" then
-		local valid, err = airtable.validateFormula(filter_formula)
-		if not valid then
-			print({ error = "invalid_filter_formula", message = err })
-			return nil
-		end
+		params.filterByFormula = filter_formula
 	end
-
 	local count = 0
 	local offset = nil
-
 	repeat
-		local params = {
-			pageSize = 100,
-			offset = offset
-		}
-		if filter_formula and type(filter_formula) == "string" and filter_formula ~= "" then
-			params.filterByFormula = filter_formula
-		end
-
-		local res = airtable.list_records(table_name, nil, params)
-
-		if not res or not res.records then
-			return nil
-		end
-
-		count = count + #res.records
-		offset = res.offset
+		params.offset = offset
+		local page = airtable.list_records(table_name, nil, params)
+		count = count + #page.records
+		offset = page.offset
 	until not offset
-
 	return count
 end
 
 return airtable
-
-

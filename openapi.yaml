@@ -1,7 +1,10 @@
 openapi: 3.0.0
 info:
   title: Clubs API
-  description: API for Hack Club clubs, built in Lua using Astra.
+  description: |
+    API for Hack Club clubs, built in Lua using Astra.
+
+    When a lookup or update fails, every endpoint responds with a 5xx status and an `{"error": "..."}` body: 502 when Airtable fails or can't be reached, 500 for any other server error. A 200 response is always a real answer.
   version: 1.0.0
 servers:
   - url: https://clubapi.hackclub.com

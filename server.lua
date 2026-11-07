@@ -47,6 +47,11 @@ local function keyProvided(req)
     return h ~= nil and h ~= ""
 end
 
+local function lookupFailed(res, message)
+    res:set_status_code(502)
+    return {error = message}
+end
+
 local function unauthorized(res)
     res:set_status_code(401)
     return {error = "Unauthorized"}
@@ -99,7 +104,7 @@ local function loadClubsSnapshot()
         clubsSnapshot.byName = byName
         clubsSnapshot.refreshedAt = os.time()
     else
-        print({ error = "clubs_snapshot_refresh_failed", message = ok and "airtable_request_failed" or tostring(map) })
+        print({ error = "clubs_snapshot_refresh_failed", message = (ok or airtable.isFailure(map)) and "airtable_request_failed" or tostring(map) })
     end
 end
 
@@ -128,7 +133,8 @@ local function inParallel(jobs)
             local handles = {}
             for i, job in ipairs(jobs) do
                 handles[i] = astraTasks.spawn_task(function()
-                    results[i] = {value = job()}
+                    local jobOk, value = pcall(job)
+                    results[i] = {ok = jobOk, value = value}
                 end)
             end
             for _, handle in ipairs(handles) do
@@ -142,7 +148,10 @@ local function inParallel(jobs)
     local values = {}
     for i, job in ipairs(jobs) do
         if not results[i] then
-            results[i] = {value = job()}
+            results[i] = {ok = true, value = job()}
+        end
+        if not results[i].ok then
+            error(results[i].value, 0)
         end
         values[i] = results[i].value
     end
@@ -272,6 +281,16 @@ local function recorded(handler)
 
         local tracker = statusTracking(res)
         local ok, result = pcall(handler, req, tracker.res)
+        if not ok then
+            if airtable.isFailure(result) then
+                tracker.res:set_status_code(502)
+                result = {error = "Airtable lookup failed"}
+            else
+                print({ error = "handler_failed", path = req:uri():match("^[^?]*"), message = tostring(result) })
+                tracker.res:set_status_code(500)
+                result = {error = "Internal server error"}
+            end
+        end
 
         local uri = req:uri()
         pcall(requestlog.record, {
@@ -281,16 +300,13 @@ local function recorded(handler)
             method = req:method(),
             path = uri:match("^[^?]*"),
             query = uri:match("%?(.*)$"),
-            status = ok and tracker.status or 500,
+            status = tracker.status,
             duration_ms = nowMs() - started,
             ip = clientIp(req),
         })
 
         pcall(pruneExpiredData)
 
-        if not ok then
-            error(result, 0)
-        end
         return result
     end
 end
@@ -323,16 +339,23 @@ server:static_file("/openapi.yaml", "openapi.yaml")
 
 -- CLUB MANAGEMENT
 
-server:get("/clubs", function(req)
+server:get("/clubs", function(req, res)
     log.request(req:uri(), req:headers())
     local map = currentClubsMap()
-    return {totalClubs = map and #map or nil}
+    if not map then
+        return lookupFailed(res, "Failed to load clubs")
+    end
+    return {totalClubs = #map}
 end)
 
 server:get("/clubs/map", function(req, res)
     log.request(req:uri(), req:headers())
     res:set_header("Access-Control-Allow-Origin", "*")
-    return currentClubsMap() or {}
+    local map = currentClubsMap()
+    if not map then
+        return lookupFailed(res, "Failed to load clubs")
+    end
+    return map
 end)
 
 server:get("/clubs/country", function(req)
@@ -524,7 +547,7 @@ server:get("/ships", function(req, res)
     local memberFormula = airtable.safeFormula("club_name (from rel_club)", params.club_name)
     local memberResult = airtable.list_all_records("Members", nil, {filterByFormula = memberFormula, fields = {"email"}})
     if not memberResult then
-        return {error = "Failed to look up club members"}
+        return lookupFailed(res, "Failed to look up club members")
     end
     local emails = {}
     for _, member in ipairs(memberResult.records) do
@@ -540,7 +563,7 @@ server:get("/ships", function(req, res)
     if auth.checkRead(req:headers().authorization) then
         local ships = airtable.list_all_records(SHIPS_TABLE, nil, shipParams, SHIPS_BASE_ID)
         if not ships then
-            return {error = "Failed to look up ships"}
+            return lookupFailed(res, "Failed to look up ships")
         end
         return ships.records
     elseif keyProvided(req) then
@@ -549,7 +572,7 @@ server:get("/ships", function(req, res)
         shipParams.fields = {"YSWS", "Code URL", "Playable URL"}
         local ships = airtable.list_all_records(SHIPS_TABLE, nil, shipParams, SHIPS_BASE_ID)
         if not ships then
-            return {error = "Failed to look up ships"}
+            return lookupFailed(res, "Failed to look up ships")
         end
         return ships.records
     end
@@ -567,7 +590,7 @@ server:get("/member/ships", function(req, res)
         local formula = airtable.safeFormula("Email", params.email)
         local ships = airtable.list_all_records(SHIPS_TABLE, nil, {filterByFormula = formula, timeZone = "America/New_York"}, SHIPS_BASE_ID)
         if not ships then
-            return {error = "Failed to look up ships"}
+            return lookupFailed(res, "Failed to look up ships")
         end
         return ships.records
     else
@@ -779,8 +802,7 @@ server:get("/person", function(req, res)
     })
     local leaders, members = lookups[1], lookups[2]
     if not leaders or not members then
-        res:set_status_code(502)
-        return {error = "Failed to look up this person in Airtable"}
+        return lookupFailed(res, "Failed to look up this person in Airtable")
     end
 
     local matches = {leader = {}, member = {}}
@@ -837,8 +859,7 @@ server:get("/person", function(req, res)
             timeZone = "America/New_York",
         })
         if not clubRecords then
-            res:set_status_code(502)
-            return {error = "Failed to look up this person's clubs in Airtable"}
+            return lookupFailed(res, "Failed to look up this person's clubs in Airtable")
         end
         for _, record in ipairs(clubRecords.records) do
             local name = firstString(record.fields.club_name)
@@ -911,7 +932,7 @@ server:delete("/member", function(req, res)
         if result and result.deleted then
             return {deleted = true, id = result.id}
         else
-            return {error = "Failed to delete member"}
+            return lookupFailed(res, "Failed to delete member")
         end
     else
         return unauthorized(res)
@@ -944,7 +965,7 @@ server:post("/member", function(req, res)
         if updated then
             return {name = updated.fields.name, email = updated.fields.email}
         else
-            return {error = "Failed to update member"}
+            return lookupFailed(res, "Failed to update member")
         end
     else
         return unauthorized(res)
@@ -972,7 +993,7 @@ server:get("/members", function(req, res)
         local memberFormula = airtable.safeFormula("club_name (from rel_club)", params.club_name)
         local memberResult = airtable.list_all_records("Members", nil, {filterByFormula = memberFormula, fields = {"name"}})
         if not memberResult then
-            return {error = "Failed to look up club members"}
+            return lookupFailed(res, "Failed to look up club members")
         end
         local memberNames = {}
         for _, member in ipairs(memberResult.records) do
@@ -1092,7 +1113,7 @@ server:post("/leader/change", function(req, res)
         }
         local created_leader = airtable.create_record("Leaders", new_leader_fields)
         if not created_leader then
-            return {error = "Failed to create new leader record"}
+            return lookupFailed(res, "Failed to create new leader record")
         end
 
         -- 3. Clear the old leader's club relations
@@ -1204,6 +1225,7 @@ server:post("/key/create", function(req, res)
             admin.audit("api key: " .. auth.getKeyName(req:headers().authorization), "key.create", created, "perms: " .. created.perms)
             return {success = true, key = created.key, name = created.name, perms = created.perms}
         else
+            res:set_status_code(500)
             return {success = false, error = err or "Failed to create key"}
         end
     else
