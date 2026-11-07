@@ -527,7 +527,7 @@ paths:
         Returns the list of ships (projects) associated with every member of a club.
         Authentication is optional.
         - No key sent: returns a limited field set per ship (YSWS, Code URL, Playable URL).
-        - Valid key sent: returns the full Unified DB Projects record per ship.
+        - Valid key sent: returns the full Unified YSWS project record per ship.
         - Invalid key sent: 401.
       parameters:
         - in: query

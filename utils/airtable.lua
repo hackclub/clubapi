@@ -88,7 +88,7 @@ end
 
 
 
-function airtable.list_records(table_name, view, params)
+function airtable.list_records(table_name, view, params, base_override)
 	-- validate inputs
 	if type(table_name) ~= "string" or table_name == "" then
 		print({ error = "invalid_table_name", provided = table_name })
@@ -96,6 +96,9 @@ function airtable.list_records(table_name, view, params)
 	end
 
 	local base_id, err = get_base_id()
+	if base_override then
+		base_id, err = base_override, nil
+	end
 	if not base_id then
 		print({ error = "missing_base_id", message = err })
 		return nil
@@ -161,7 +164,7 @@ function airtable.list_records(table_name, view, params)
 	return ok2 and dec or nil
 end
 
-function airtable.list_all_records(table_name, view, params)
+function airtable.list_all_records(table_name, view, params, base_override)
 	local records = {}
 	local offset = nil
 	repeat
@@ -170,7 +173,7 @@ function airtable.list_all_records(table_name, view, params)
 			page_params[k] = v
 		end
 		page_params.offset = offset
-		local page = airtable.list_records(table_name, view, page_params)
+		local page = airtable.list_records(table_name, view, page_params, base_override)
 		if not page or not page.records then
 			return nil
 		end

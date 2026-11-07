@@ -512,6 +512,9 @@ end)
 
 -- SHIP MANAGEMENT
 
+local SHIPS_BASE_ID = os.getenv("AIRTABLE_SHIPS_BASE_ID") or "appy6uGh9OPj0UNHI"
+local SHIPS_TABLE = os.getenv("AIRTABLE_SHIPS_TABLE") or "tbljTb95aUfOBKTDB"
+
 server:get("/ships", function(req, res)
     log.request(req:uri(), req:headers())
     local params = url.parse_query(req:uri())
@@ -535,7 +538,7 @@ server:get("/ships", function(req, res)
     local formula = orFormula("Email", emails)
     local shipParams = {filterByFormula = formula, timeZone = "America/New_York"}
     if auth.checkRead(req:headers().authorization) then
-        local ships = airtable.list_all_records("Unified DB Projects", nil, shipParams)
+        local ships = airtable.list_all_records(SHIPS_TABLE, nil, shipParams, SHIPS_BASE_ID)
         if not ships then
             return {error = "Failed to look up ships"}
         end
@@ -544,7 +547,7 @@ server:get("/ships", function(req, res)
         return unauthorized(res)
     else
         shipParams.fields = {"YSWS", "Code URL", "Playable URL"}
-        local ships = airtable.list_all_records("Unified DB Projects", nil, shipParams)
+        local ships = airtable.list_all_records(SHIPS_TABLE, nil, shipParams, SHIPS_BASE_ID)
         if not ships then
             return {error = "Failed to look up ships"}
         end
@@ -562,7 +565,7 @@ server:get("/member/ships", function(req, res)
             return {error = "Missing email parameter"}
         end
         local formula = airtable.safeFormula("Email", params.email)
-        local ships = airtable.list_all_records("Unified DB Projects", nil, {filterByFormula = formula, timeZone = "America/New_York"})
+        local ships = airtable.list_all_records(SHIPS_TABLE, nil, {filterByFormula = formula, timeZone = "America/New_York"}, SHIPS_BASE_ID)
         if not ships then
             return {error = "Failed to look up ships"}
         end
