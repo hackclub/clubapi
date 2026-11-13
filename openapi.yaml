@@ -27,6 +27,10 @@ components:
         club_status:
           type: string
           description: Present when found and the leader is linked to a club
+        role:
+          type: string
+          enum: [leader, co-leader]
+          description: Present when found
     PersonMemberMatch:
       type: object
       properties:
@@ -58,7 +62,9 @@ paths:
   /clubs:
     get:
       summary: Get total number of clubs
-      description: Returns the total number of clubs registered.
+      description: |
+        Returns the number of clubs that aren't dormant, the same count as the Clubs platform's club directory.
+        Refreshed from Airtable in the background about once a minute.
       security: []
       responses:
         '200':
@@ -75,9 +81,11 @@ paths:
     get:
       summary: Get all clubs for map display
       description: |
-        Returns every club with fuzzed coordinates for map display.
-        Fully public, no authentication supported or required.
-        Data is refreshed from Airtable in the background about once a minute, so it can be up to a few minutes old.
+        Returns the same pins as the Clubs platform's public map (clubs.hackclub.com/explore/map), with the same positions.
+        A pin is never the club's real venue unless its leader chose that: by default it sits a random 0.5-3 km away.
+        Dormant clubs, clubs a leader took off the map and clubs HQ has hidden are left out, as on the platform.
+        The profile link and website only appear for clubs whose leader made the profile public.
+        Fully public, no authentication supported or required. Refreshed about once a minute.
       security: []
       responses:
         '200':
@@ -91,6 +99,7 @@ paths:
                   properties:
                     id:
                       type: string
+                      description: Airtable record ID of the club
                     fields:
                       type: object
                       properties:
@@ -98,19 +107,33 @@ paths:
                           type: string
                         venue_lat_fuzz:
                           type: number
-                          description: Latitude rounded to ~2 decimal places
+                          description: Latitude of the platform's map pin
                         venue_lng_fuzz:
                           type: number
-                          description: Longitude rounded to ~2 decimal places
+                          description: Longitude of the platform's map pin
                         club_status:
                           type: string
+                        place:
+                          type: string
+                          description: Where the club is, as the platform shows it (the country unless the club opted in to its town)
+                        country:
+                          type: string
+                        ship_count:
+                          type: integer
+                          description: Approved ships made on the platform
+                        profile_url:
+                          type: string
+                          description: Only for clubs with a public profile
                         club_website:
                           type: string
+                          description: Only for clubs with a public profile
+        '502':
+          description: The Clubs platform's map couldn't be loaded
 
   /clubs/country:
     get:
       summary: Get amount of clubs in a country
-      description: Returns the count of clubs in the specified country.
+      description: Returns the number of clubs that aren't dormant whose venue is in the country (case-insensitive, as spelled in the Clubs base, e.g. "United States").
       security: []
       parameters:
         - in: query
@@ -118,7 +141,7 @@ paths:
           schema:
             type: string
           required: true
-          description: The country to filter by (e.g. "USA", "India")
+          description: The country to filter by (e.g. "United States", "India")
       responses:
         '200':
           description: Successful response
@@ -132,26 +155,12 @@ paths:
 
   /clubs/level:
     get:
-      summary: Get amount of clubs at a level
-      description: Returns the count of clubs at the specified level.
+      summary: Retired - club levels
+      description: Club levels were retired; the Clubs platform has no levels. Always responds 410.
       security: []
-      parameters:
-        - in: query
-          name: level
-          schema:
-            type: string
-          required: true
-          description: The level to filter by (e.g. "1", "2", "3")
       responses:
-        '200':
-          description: Successful response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  clubs:
-                    type: integer
+        '410':
+          description: Club levels were retired
 
   /club:
     get:
@@ -159,8 +168,8 @@ paths:
       description: |
         Returns information about a club.
         Authentication is optional.
-        - No key sent: returns a limited public field set (club_name, status, club_website, leader_slack_id, venue_addr_country).
-        - Valid key sent: returns the full Airtable club record.
+        - No key sent: what the Clubs platform shows signed-out. Clubs on its public map return their name, status, place, country and ship count; clubs with a public profile also return the profile link, website and member count (unless the club hides it). Anything else returns `{club_name: null}`.
+        - Valid key sent: returns the full Airtable club record, with `member_count` counted the way the platform counts members (active members plus leaders).
         - Invalid key sent: 401.
       parameters:
         - in: query
@@ -254,11 +263,8 @@ paths:
     get:
       summary: Get leader from email
       description: |
-        Checks if a leader exists by email.
-        Authentication is optional.
-        - No key sent: returns true/false indicating existence.
-        - Valid key sent: returns the club name and status associated with the leader.
-        - Invalid key sent: 401.
+        Returns the club a person leads, looked up by email. Requires Read permissions.
+        Leaders are counted the way the Clubs platform counts them: a Leaders record linked to a club, or an active member whose member type is co-leader. `role` says which.
       parameters:
         - in: query
           name: email
@@ -273,19 +279,18 @@ paths:
           content:
             application/json:
               schema:
-                oneOf:
-                  - type: object
-                    properties:
-                      club_name:
-                        type: string
-                        nullable: true
-                      club_status:
-                        type: string
-                        nullable: true
-                  - type: object
-                    properties:
-                      leader:
-                        type: boolean
+                type: object
+                properties:
+                  club_name:
+                    type: string
+                    nullable: true
+                  club_status:
+                    type: string
+                    nullable: true
+                  role:
+                    type: string
+                    enum: [leader, co-leader]
+                    description: Absent when the person doesn't lead a club
         '401':
           description: An API key was sent but it is invalid
           content:
@@ -350,11 +355,8 @@ paths:
     get:
       summary: Get leader from Slack ID
       description: |
-        Checks if a leader exists by Slack ID.
-        Authentication is optional.
-        - No key sent: returns true/false indicating existence.
-        - Valid key sent: returns the club name and status associated with the leader.
-        - Invalid key sent: 401.
+        Returns the club a person leads, looked up by Slack ID. Requires Read permissions.
+        Leaders are counted the way the Clubs platform counts them: a Leaders record linked to a club, or an active member whose member type is co-leader. `role` says which.
       parameters:
         - in: query
           name: slackid
@@ -368,19 +370,18 @@ paths:
           content:
             application/json:
               schema:
-                oneOf:
-                  - type: object
-                    properties:
-                      club_name:
-                        type: string
-                        nullable: true
-                      club_status:
-                        type: string
-                        nullable: true
-                  - type: object
-                    properties:
-                      leader:
-                        type: boolean
+                type: object
+                properties:
+                  club_name:
+                    type: string
+                    nullable: true
+                  club_status:
+                    type: string
+                    nullable: true
+                  role:
+                    type: string
+                    enum: [leader, co-leader]
+                    description: Absent when the person doesn't lead a club
         '400':
           description: Missing slackid parameter
           content:
@@ -405,7 +406,7 @@ paths:
   /leader/name:
     get:
       summary: Get leader's name by email
-      description: Returns the name associated with a leader by email. Requires Read permissions.
+      description: Returns the name of a leader or co-leader by email (leaders counted as in GET /leader). Requires Read permissions.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -527,10 +528,12 @@ paths:
     get:
       summary: Get club ships
       description: |
-        Returns the list of ships (projects) associated with every member of a club.
+        Returns a club's ships the way the Clubs platform counts them. Each item has a `source`:
+        - `platform`: approved ships made on the platform (Club Workshops base, Projects table, Status Approved or Submitted).
+        - `external`: ships to other YSWS programs that the platform's external-ships job linked to this club (Club Stats base, Unified DB table).
         Authentication is optional.
-        - No key sent: returns a limited field set per ship (YSWS, Code URL, Playable URL).
-        - Valid key sent: returns the full Unified YSWS project record per ship.
+        - No key sent: the ships the club's public profile on the platform shows (Title, Description, Playable URL, Workshop, Approved At), with no code links. Clubs without a public profile return an empty list.
+        - Valid key sent: the full Airtable record of every platform and external ship.
         - Invalid key sent: 401.
       parameters:
         - in: query
@@ -550,7 +553,7 @@ paths:
                   type: object
                   additionalProperties: true
         '400':
-          description: Missing club_name parameter, or club member lookup failed
+          description: Missing club_name parameter
           content:
             application/json:
               schema:
@@ -620,7 +623,7 @@ paths:
   /member:
     get:
       summary: Get member's club and email by name
-      description: Returns the club and email associated with a member by name. Requires Read permissions.
+      description: Returns the club and email associated with a member by name. Only active members count (pending join requests and removed members are not found, as on the Clubs platform). Requires Read permissions.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -788,7 +791,7 @@ paths:
   /member/email:
     get:
       summary: Get member's club by email
-      description: Returns the club name associated with a member by email. Requires Read permissions.
+      description: Returns the club name associated with a member by email. Only active members count (pending join requests and removed members are not found, as on the Clubs platform). Requires Read permissions.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -844,7 +847,7 @@ paths:
   /member/name:
     get:
       summary: Get member's name by email
-      description: Returns the name associated with a member by email. Requires Read permissions.
+      description: Returns the name associated with a member by email. Only active members count (pending join requests and removed members are not found, as on the Clubs platform). Requires Read permissions.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -899,7 +902,7 @@ paths:
   /member/slack:
     get:
       summary: Get member's club by Slack ID
-      description: Returns the club name associated with a member by Slack ID. Requires Read permissions.
+      description: Returns the club name associated with a member by Slack ID. Only active members count (pending join requests and removed members are not found, as on the Clubs platform). Requires Read permissions.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -959,6 +962,8 @@ paths:
         Pass a Slack ID and/or one or more emails. Leader and member results are reported separately for each identifier so mismatches stay visible,
         and every matched club's full record is included under `clubs`, keyed by club name (same shape as `/club`).
         Matching ignores case. Requires Read permissions.
+        Leaders and members are counted the way the Clubs platform counts them: a leader is a Leaders record linked to a club or an active co-leader member (`role` says which), and pending join requests and removed members are not members.
+        Each club's `member_count` is active members plus leaders, as on the platform.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -1064,7 +1069,7 @@ paths:
   /members:
     get:
       summary: Get club members
-      description: Returns the list of member names for the specified club. Requires Read permissions.
+      description: Returns the names of the club's active members (pending join requests and removed members are left out, as on the Clubs platform). Requires Read permissions.
       security:
         - ApiKeyAuth: []
       parameters:
@@ -1112,73 +1117,22 @@ paths:
   ###################
   /level:
     get:
-      summary: Get club level
-      description: Returns the level of the specified club.
+      summary: Retired - club level
+      description: Club levels were retired; the Clubs platform has no levels. Always responds 410.
       security: []
-      parameters:
-        - in: query
-          name: club_name
-          schema:
-            type: string
-          required: true
-          description: Name of the club
       responses:
-        '200':
-          description: Club level
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  level:
-                    type: string
+        '410':
+          description: Club levels were retired
     post:
-      summary: Change club level
-      description: Updates the level of a club. Requires Write permissions.
+      summary: Retired - change club level
+      description: Club levels were retired; the Clubs platform has no levels. Responds 410 to a Write key, 401 otherwise.
       security:
         - ApiKeyAuth: []
-      parameters:
-        - in: query
-          name: club_name
-          schema:
-            type: string
-          required: true
-          description: Name of the club
-        - in: query
-          name: level
-          schema:
-            type: string
-          required: true
-          description: New level for the club
       responses:
-        '200':
-          description: Level updated successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  new_level:
-                    type: string
-        '400':
-          description: Missing parameters or club not found
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
         '401':
           description: Unauthorized
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: "Unauthorized"
+        '410':
+          description: Club levels were retired
 
   /status:
     get:

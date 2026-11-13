@@ -9,27 +9,8 @@ local log = require("utils/logging")
 local db = require("utils/db")
 local admin = require("utils/admin")
 local requestlog = require("utils/requestlog")
+local platform = require("utils/platform")
 
-local function fuzzCoord(n)
-    if type(n) ~= "number" then
-        return n
-    end
-    return math.floor(n * 100 + 0.5) / 100
-end
-
-local function orFormula(fieldName, values)
-    if not values or #values == 0 then
-        return nil
-    end
-    local parts = {}
-    for _, v in ipairs(values) do
-        table.insert(parts, "{" .. fieldName .. "} = \"" .. airtable.sanitizeFormulaValue(v) .. "\"")
-    end
-    if #parts == 1 then
-        return parts[1]
-    end
-    return "OR(" .. table.concat(parts, ",") .. ")"
-end
 
 local NOT_IMPLEMENTED = {
     error = "Not yet implemented — the Airtable field(s) this endpoint relied on were removed in a base migration and no replacement has been wired up yet"
@@ -59,71 +40,158 @@ end
 
 local CLUBS_REFRESH_INTERVAL_MS = 60 * 1000
 local CLUBS_MAX_STALENESS_SECONDS = 5 * 60
-local clubsSnapshot = { map = nil, byName = nil, refreshedAt = 0, refreshing = false }
+local PROFILE_CACHE_SECONDS = 60
+local clubsSnapshot = { records = nil, byName = nil, byId = nil, refreshedAt = 0, refreshing = false }
+local platformSnapshot = { map = nil, byName = nil, refreshedAt = 0, refreshing = false }
+local profileCache = {}
 
-local COUNT_CACHE_TTL_SECONDS = 60
-local countCache = { country = {}, level = {} }
+local function lowerTrim(value)
+    if type(value) ~= "string" then
+        return nil
+    end
+    return value:gsub("^%s+", ""):gsub("%s+$", ""):lower()
+end
 
-local function fetchClubsMap()
-    local result = {}
+local function isDormant(record)
+    return lowerTrim(record.fields.status) == "dormant"
+end
+
+local function httpUrl(value)
+    if type(value) == "string" and value:lower():match("^https?://") then
+        return value
+    end
+    return nil
+end
+
+local function fetchClubs()
+    local records = airtable.list_all_records("Clubs", nil, {}).records
     local byName = {}
-    local offset = nil
-    repeat
-        local data = airtable.list_records("Clubs", nil, {offset = offset})
-        if not data or not data.records then
-            return nil
+    local byId = {}
+    for _, club in ipairs(records) do
+        local name = lowerTrim(club.fields.club_name)
+        if name and not byName[name] then
+            byName[name] = club
         end
-        for _, club in ipairs(data.records) do
-            local name = type(club.fields.club_name) == "string" and club.fields.club_name:lower() or nil
-            if name and not byName[name] then
-                byName[name] = club
-            end
-            local clubFields = {
-                club_name = club.fields.club_name,
-                venue_lat_fuzz = fuzzCoord(club.fields.venue_lat),
-                venue_lng_fuzz = fuzzCoord(club.fields.venue_lng),
-                club_status = club.fields.status
-            }
-            if club.fields.club_website then
-                clubFields.club_website = club.fields.club_website
-            end
-            table.insert(result, {
-                id = club.id,
-                fields = clubFields
-            })
-        end
-        offset = data.offset
-    until not offset
-    return result, byName
+        byId[club.id] = club
+    end
+    return records, byName, byId
 end
 
 local function loadClubsSnapshot()
-    local ok, map, byName = pcall(fetchClubsMap)
-    if ok and map then
-        clubsSnapshot.map = map
+    local ok, records, byName, byId = pcall(fetchClubs)
+    if ok then
+        clubsSnapshot.records = records
         clubsSnapshot.byName = byName
+        clubsSnapshot.byId = byId
         clubsSnapshot.refreshedAt = os.time()
     else
-        print({ error = "clubs_snapshot_refresh_failed", message = (ok or airtable.isFailure(map)) and "airtable_request_failed" or tostring(map) })
+        print({ error = "clubs_snapshot_refresh_failed", message = airtable.isFailure(records) and "airtable_request_failed" or tostring(records) })
+    end
+end
+
+local function loadPlatformSnapshot()
+    local ok, map, err = pcall(platform.mapPins)
+    if ok and map then
+        local byName = {}
+        for _, pin in ipairs(map.pins) do
+            local name = lowerTrim(pin.name)
+            if name and not byName[name] then
+                byName[name] = pin
+            end
+        end
+        platformSnapshot.map = map
+        platformSnapshot.byName = byName
+        platformSnapshot.refreshedAt = os.time()
+    else
+        print({ error = "platform_map_refresh_failed", message = ok and err or tostring(map) })
     end
 end
 
 local function refreshClubsSnapshot()
-    if clubsSnapshot.refreshing then
-        return
+    if not clubsSnapshot.refreshing then
+        clubsSnapshot.refreshing = true
+        loadClubsSnapshot()
+        clubsSnapshot.refreshing = false
     end
-    clubsSnapshot.refreshing = true
-    loadClubsSnapshot()
-    clubsSnapshot.refreshing = false
+    if not platformSnapshot.refreshing then
+        platformSnapshot.refreshing = true
+        loadPlatformSnapshot()
+        platformSnapshot.refreshing = false
+    end
 end
 
-local function currentClubsMap()
-    if not clubsSnapshot.map then
+local function currentClubs()
+    if not clubsSnapshot.records then
         loadClubsSnapshot()
     elseif os.time() - clubsSnapshot.refreshedAt > CLUBS_MAX_STALENESS_SECONDS then
-        refreshClubsSnapshot()
+        loadClubsSnapshot()
     end
-    return clubsSnapshot.map
+    if os.time() - clubsSnapshot.refreshedAt > CLUBS_MAX_STALENESS_SECONDS then
+        return nil
+    end
+    return clubsSnapshot
+end
+
+local function currentPlatformMap()
+    if not platformSnapshot.map or os.time() - platformSnapshot.refreshedAt > CLUBS_MAX_STALENESS_SECONDS then
+        loadPlatformSnapshot()
+    end
+    if os.time() - platformSnapshot.refreshedAt > CLUBS_MAX_STALENESS_SECONDS then
+        return nil
+    end
+    return platformSnapshot
+end
+
+local function publicProfile(handle)
+    local now = os.time()
+    local cached = profileCache[handle]
+    if cached and now < cached.expiresAt then
+        return cached.profile
+    end
+    local profile, err = platform.clubProfile(handle)
+    if not profile and err ~= "not_public" and err ~= "not_found" then
+        return nil, err
+    end
+    profileCache[handle] = { profile = profile, expiresAt = now + PROFILE_CACHE_SECONDS }
+    return profile
+end
+
+local function clubByName(name)
+    local key = lowerTrim(name)
+    if not key then
+        return nil
+    end
+    local snapshot = currentClubs()
+    if snapshot then
+        return snapshot.byName[key]
+    end
+    return airtable.list_records("Clubs", nil, {filterByFormula = airtable.safeFormula("club_name", name)}).records[1]
+end
+
+local function clubById(id)
+    if type(id) ~= "string" or id == "" then
+        return nil
+    end
+    local snapshot = currentClubs()
+    if snapshot and snapshot.byId[id] then
+        return snapshot.byId[id]
+    end
+    return airtable.get_record("Clubs", id)
+end
+
+local function withPlatformMemberCount(club)
+    local fields = {}
+    for key, value in pairs(club.fields) do
+        fields[key] = value
+    end
+    local leaders = type(fields.rel_leaders) == "table" and #fields.rel_leaders or 0
+    fields.member_count = (tonumber(fields.member_count) or 0) + leaders
+    local copy = {}
+    for key, value in pairs(club) do
+        copy[key] = value
+    end
+    copy.fields = fields
+    return copy
 end
 
 local function inParallel(jobs)
@@ -157,24 +225,6 @@ local function inParallel(jobs)
     end
     return values
 end
-
-local function cachedCount(bucket, key, computeFn)
-    local now = os.time()
-    local entry = bucket[key]
-    if entry and now < entry.expiresAt then
-        return entry.count
-    end
-    local count = computeFn()
-    bucket[key] = { count = count, expiresAt = now + COUNT_CACHE_TTL_SECONDS }
-    return count
-end
-
-local RATE_LIMIT_WINDOW_SECONDS = 60
-local RATE_LIMIT_MAX_REQUESTS = 10
-local RATE_LIMIT_NEAR_LIMIT_REQUESTS = 8
-local RATE_LIMIT_STRIKE_THRESHOLD = 3
-local RATE_LIMIT_BLOCK_SECONDS = 600
-local rateLimitState = {}
 
 local function clientIp(req)
     local headers = req:headers()
@@ -339,53 +389,116 @@ server:static_file("/openapi.yaml", "openapi.yaml")
 
 -- CLUB MANAGEMENT
 
+local function retired(res)
+    res:set_status_code(410)
+    return {error = "Club levels were retired: the Clubs platform has no levels"}
+end
+
+local function notDormantClubs(snapshot)
+    local clubs = {}
+    for _, club in ipairs(snapshot.records) do
+        if not isDormant(club) then
+            table.insert(clubs, club)
+        end
+    end
+    return clubs
+end
+
 server:get("/clubs", function(req, res)
     log.request(req:uri(), req:headers())
-    local map = currentClubsMap()
-    if not map then
+    local snapshot = currentClubs()
+    if not snapshot then
         return lookupFailed(res, "Failed to load clubs")
     end
-    return {totalClubs = #map}
+    return {totalClubs = #notDormantClubs(snapshot)}
 end)
 
 server:get("/clubs/map", function(req, res)
     log.request(req:uri(), req:headers())
     res:set_header("Access-Control-Allow-Origin", "*")
-    local map = currentClubsMap()
+    local map = currentPlatformMap()
     if not map then
-        return lookupFailed(res, "Failed to load clubs")
+        return lookupFailed(res, "Failed to load the club map from the Clubs platform")
     end
-    return map
+    local clubs = currentClubs()
+    local result = {}
+    for _, pin in ipairs(map.map.pins) do
+        local club = clubs and clubs.byName[lowerTrim(pin.name)] or nil
+        local fields = {
+            club_name = pin.name,
+            venue_lat_fuzz = pin.lat,
+            venue_lng_fuzz = pin.lng,
+            club_status = club and club.fields.status or nil,
+            place = pin.place,
+            country = pin.country,
+            ship_count = pin.shipCount,
+        }
+        if pin.linkable and pin.handle then
+            fields.profile_url = platform.profileUrl(pin.handle)
+            fields.club_website = club and httpUrl(club.fields.club_website) or nil
+        end
+        table.insert(result, {id = club and club.id or pin.id, fields = fields})
+    end
+    return result
 end)
 
-server:get("/clubs/country", function(req)
+server:get("/clubs/country", function(req, res)
     log.request(req:uri(), req:headers())
     local params = url.parse_query(req:uri())
     if params.country == nil then
         return {error = "Missing country parameter"}
     end
-    local stripped = url.strip_quotes(params.country)
-    local count = cachedCount(countCache.country, stripped, function()
-        local formula = airtable.safeFormula("venue_addr_country", params.country)
-        return airtable.count_records("Clubs", formula)
-    end)
+    local snapshot = currentClubs()
+    if not snapshot then
+        return lookupFailed(res, "Failed to load clubs")
+    end
+    local country = lowerTrim(url.strip_quotes(params.country))
+    local count = 0
+    for _, club in ipairs(notDormantClubs(snapshot)) do
+        if lowerTrim(club.fields.venue_addr_country) == country then
+            count = count + 1
+        end
+    end
     return {clubs = count}
 end)
 
-server:get("/clubs/level", function(req)
+server:get("/clubs/level", function(req, res)
     log.request(req:uri(), req:headers())
-    local params = url.parse_query(req:uri())
-    if params.level == nil then
-        return {error = "Missing level parameter"}
-    end
-    local stripped = url.strip_quotes(params.level)
-    local count = cachedCount(countCache.level, stripped, function()
-        local levelValue = "level " .. airtable.sanitizeFormulaValue(stripped)
-        local formula = airtable.safeFormula("level", levelValue)
-        return airtable.count_records("Clubs", formula)
-    end)
-    return {clubs = count}
+    return retired(res)
 end)
+
+local function publicClub(name)
+    local map = currentPlatformMap()
+    if not map then
+        return nil, "map_unavailable"
+    end
+    local pin = map.byName[lowerTrim(name)]
+    if not pin then
+        return nil
+    end
+    local club = clubByName(name)
+    local fields = {
+        club_name = pin.name,
+        status = club and club.fields.status or nil,
+        place = pin.place,
+        venue_addr_country = pin.country,
+        ship_count = pin.shipCount,
+    }
+    local profile = nil
+    if pin.linkable and pin.handle then
+        local err
+        profile, err = publicProfile(pin.handle)
+        if err then
+            return nil, err
+        end
+    end
+    if profile then
+        fields.profile_url = platform.profileUrl(pin.handle)
+        fields.club_website = httpUrl(profile.website)
+        fields.member_count = platform.num(profile.memberCount)
+    end
+    return {id = club and club.id or pin.id, fields = fields}, nil, pin, profile
+end
 
 server:get("/club", function(req, res)
     log.request(req:uri(), req:headers())
@@ -393,18 +506,20 @@ server:get("/club", function(req, res)
     if params.name == nil then
         return {error = "Missing name parameter"}
     end
-    local formula = airtable.safeFormula("club_name", params.name)
+    local name = url.strip_quotes(params.name)
     if auth.checkRead(req:headers().authorization) then
-        local club = airtable.list_records("Clubs", nil, {filterByFormula = formula, timeZone = "America/New_York"}).records[1]
+        local club = clubByName(name)
         if club == nil then
             return {club_name = nil}
         end
-        return club
+        return withPlatformMemberCount(club)
     elseif keyProvided(req) then
         return unauthorized(res)
     else
-        local fields = {"club_name", "status", "club_website", "leader_slack_id", "venue_addr_country"}
-        local club = airtable.list_records("Clubs", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields}).records[1]
+        local club, err = publicClub(name)
+        if err then
+            return lookupFailed(res, "Failed to load this club from the Clubs platform")
+        end
         if club == nil then
             return {club_name = nil}
         end
@@ -438,72 +553,92 @@ end)
 
 -- LEADER MANAGEMENT
 
+local ACTIVE_MEMBER_FORMULA = 'NOT(OR(LOWER({status}) = "pending", LOWER({status}) = "dormant"))'
+local CO_LEADER_FORMULA = 'LOWER({member_type}) = "co-leader"'
+
+local function activeMember(formula)
+    return "AND(" .. formula .. ", " .. ACTIVE_MEMBER_FORMULA .. ")"
+end
+
+local function isActiveMember(record)
+    local status = lowerTrim(record.fields.status)
+    return status ~= "pending" and status ~= "dormant"
+end
+
+local function isCoLeader(record)
+    return lowerTrim(record.fields.member_type) == "co-leader" and isActiveMember(record)
+end
+
+local function firstString(value)
+    if type(value) == "table" then
+        value = value[1]
+    end
+    if type(value) == "string" and value ~= "" then
+        return value
+    end
+    return nil
+end
+
+local function findLeader(leaderField, memberField, value)
+    local lookups = inParallel({
+        function()
+            return airtable.list_all_records("Leaders", nil, {
+                filterByFormula = airtable.safeFormula(leaderField, value),
+                fields = {"rel_clubs", "name_first", "name_last"},
+            })
+        end,
+        function()
+            return airtable.list_all_records("Members", nil, {
+                filterByFormula = "AND(" .. airtable.safeFormula(memberField, value) .. ", " .. CO_LEADER_FORMULA .. ", " .. ACTIVE_MEMBER_FORMULA .. ")",
+                fields = {"rel_club", "name", "name_first", "name_last"},
+            })
+        end,
+    })
+    for _, leader in ipairs(lookups[1].records) do
+        local clubId = firstString(leader.fields.rel_clubs)
+        if clubId then
+            return {role = "leader", record = leader, clubId = clubId}
+        end
+    end
+    for _, member in ipairs(lookups[2].records) do
+        local clubId = firstString(member.fields.rel_club)
+        if clubId then
+            return {role = "co-leader", record = member, clubId = clubId}
+        end
+    end
+    return nil
+end
+
+local function leaderClub(found)
+    local club = found and clubById(found.clubId) or nil
+    if club == nil then
+        return {club_name = nil, club_status = nil}
+    end
+    return {club_name = club.fields.club_name, club_status = club.fields.status, role = found.role}
+end
+
 server:get("/leader", function(req, res)
     log.request(req:uri(), req:headers())
+    if not auth.checkRead(req:headers().authorization) then
+        return unauthorized(res)
+    end
     local params = url.parse_query(req:uri())
     if params.email == nil then
         return {error = "Missing email parameter"}
     end
-    local formula = airtable.safeFormula("contact_email", params.email)
-    local fields = {"rel_clubs"}
-    if auth.checkRead(req:headers().authorization) then
-        local leader = airtable.list_records("Leaders", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields}).records[1]
-        if leader == nil then
-            return {club_name = nil, club_status = nil}
-        end
-        local club = leader.fields.rel_clubs and leader.fields.rel_clubs[1] or nil
-        if club == nil then
-            return {club_name = nil, club_status = nil}
-        end
-        local clubRecord = airtable.get_record("Clubs", club)
-        if clubRecord == nil then
-            return {club_name = nil, club_status = nil}
-        end
-        return {club_name = clubRecord.fields.club_name, club_status = clubRecord.fields.status}
-    elseif keyProvided(req) then
-        return unauthorized(res)
-    else
-        local leader = airtable.list_records("Leaders", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields})
-        if leader.records[1] == nil then
-            return {leader = false}
-        else
-            return {leader = true}
-        end
-    end
+    return leaderClub(findLeader("contact_email", "email", params.email))
 end)
 
 server:get("/leader/slack", function(req, res)
     log.request(req:uri(), req:headers())
+    if not auth.checkRead(req:headers().authorization) then
+        return unauthorized(res)
+    end
     local params = url.parse_query(req:uri())
     if params.slackid == nil then
         return {error = "Missing slackid parameter"}
     end
-    local formula = airtable.safeFormula("contact_slack", params.slackid)
-    local fields = {"rel_clubs"}
-    if auth.checkRead(req:headers().authorization) then
-        local leader = airtable.list_records("Leaders", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields}).records[1]
-        if leader == nil then
-            return {club_name = nil, club_status = nil}
-        end
-        local club = leader.fields.rel_clubs and leader.fields.rel_clubs[1] or nil
-        if club == nil then
-            return {club_name = nil, club_status = nil}
-        end
-        local clubRecord = airtable.get_record("Clubs", club)
-        if clubRecord == nil then
-            return {club_name = nil, club_status = nil}
-        end
-        return {club_name = clubRecord.fields.club_name, club_status = clubRecord.fields.status}
-    elseif keyProvided(req) then
-        return unauthorized(res)
-    else
-        local leader = airtable.list_records("Leaders", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields})
-        if leader.records[1] == nil then
-            return {leader = false}
-        else
-            return {leader = true}
-        end
-    end
+    return leaderClub(findLeader("contact_slack", "contact_slack", params.slackid))
 end)
 
 server:get("/leader/name", function(req, res)
@@ -513,19 +648,17 @@ server:get("/leader/name", function(req, res)
         if params.email == nil then
             return {error = "Missing email parameter"}
         end
-        local formula = airtable.safeFormula("contact_email", params.email)
-        local fields = {"name_first", "name_last"}
-        local leader = airtable.list_records("Leaders", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields}).records[1]
-        if leader == nil then
+        local found = findLeader("contact_email", "email", params.email)
+        if found == nil then
             return {error = "Leader not found"}
         end
-        local first = leader.fields.name_first
-        local last = leader.fields.name_last
+        local first = found.record.fields.name_first
+        local last = found.record.fields.name_last
         local name
         if first and last then
             name = first .. " " .. last
         else
-            name = first or last
+            name = first or last or found.record.fields.name
         end
         return {name = name}
     else
@@ -537,6 +670,68 @@ end)
 
 local SHIPS_BASE_ID = os.getenv("AIRTABLE_SHIPS_BASE_ID") or "appy6uGh9OPj0UNHI"
 local SHIPS_TABLE = os.getenv("AIRTABLE_SHIPS_TABLE") or "tbljTb95aUfOBKTDB"
+local PROJECTS_BASE_ID = os.getenv("AIRTABLE_PROJECTS_BASE_ID") or "appVyKAQSUBy89iHC"
+local PROJECTS_TABLE = os.getenv("AIRTABLE_PROJECTS_TABLE") or "tblMkD50oDTqK4UoM"
+local EXTERNAL_SHIPS_BASE_ID = os.getenv("AIRTABLE_EXTERNAL_SHIPS_BASE_ID") or "appjszEqjvby2C4tQ"
+local EXTERNAL_SHIPS_TABLE = os.getenv("AIRTABLE_EXTERNAL_SHIPS_TABLE") or "tblKWtcTm5Ojj1Lz2"
+local APPROVED_SHIP_FORMULA = 'OR({Status} = "Approved", {Status} = "Submitted")'
+
+local function tagged(records, source)
+    for _, record in ipairs(records) do
+        record.source = source
+    end
+    return records
+end
+
+local function clubShips(club)
+    local name = club.fields.club_name
+    local hasId = type(club.id) == "string" and club.id:match("^rec%w+$")
+    local lookups = inParallel({
+        function()
+            return airtable.list_all_records(PROJECTS_TABLE, nil, {
+                filterByFormula = "AND(" .. airtable.safeFormula("Club", name) .. ", " .. APPROVED_SHIP_FORMULA .. ")",
+                timeZone = "America/New_York",
+            }, PROJECTS_BASE_ID)
+        end,
+        function()
+            if not hasId then
+                return {records = {}}
+            end
+            return airtable.list_all_records(EXTERNAL_SHIPS_TABLE, nil, {
+                filterByFormula = 'FIND("' .. club.id .. '", ARRAYJOIN({rel_club}))',
+                timeZone = "America/New_York",
+            }, EXTERNAL_SHIPS_BASE_ID)
+        end,
+    })
+    local ships = tagged(lookups[1].records, "platform")
+    for _, ship in ipairs(tagged(lookups[2].records, "external")) do
+        table.insert(ships, ship)
+    end
+    return ships
+end
+
+local function publicShips(profile)
+    local ships = {}
+    if type(profile.ships) ~= "table" then
+        return ships
+    end
+    for _, ship in ipairs(profile.ships) do
+        if type(ship) == "table" then
+            table.insert(ships, {
+                id = platform.str(ship.id),
+                source = "platform",
+                fields = {
+                    Title = platform.str(ship.title),
+                    Description = platform.str(ship.description),
+                    ["Playable URL"] = httpUrl(ship.playableUrl),
+                    Workshop = platform.str(ship.workshopTitle),
+                    ["Approved At"] = platform.str(ship.approvedAt),
+                },
+            })
+        end
+    end
+    return ships
+end
 
 server:get("/ships", function(req, res)
     log.request(req:uri(), req:headers())
@@ -544,37 +739,24 @@ server:get("/ships", function(req, res)
     if params.club_name == nil then
         return {error = "Missing club_name parameter"}
     end
-    local memberFormula = airtable.safeFormula("club_name (from rel_club)", params.club_name)
-    local memberResult = airtable.list_all_records("Members", nil, {filterByFormula = memberFormula, fields = {"email"}})
-    if not memberResult then
-        return lookupFailed(res, "Failed to look up club members")
-    end
-    local emails = {}
-    for _, member in ipairs(memberResult.records) do
-        if member.fields.email then
-            table.insert(emails, member.fields.email)
-        end
-    end
-    if #emails == 0 then
-        return {}
-    end
-    local formula = orFormula("Email", emails)
-    local shipParams = {filterByFormula = formula, timeZone = "America/New_York"}
+    local name = url.strip_quotes(params.club_name)
     if auth.checkRead(req:headers().authorization) then
-        local ships = airtable.list_all_records(SHIPS_TABLE, nil, shipParams, SHIPS_BASE_ID)
-        if not ships then
-            return lookupFailed(res, "Failed to look up ships")
+        local club = clubByName(name)
+        if club == nil then
+            return {}
         end
-        return ships.records
+        return clubShips(club)
     elseif keyProvided(req) then
         return unauthorized(res)
     else
-        shipParams.fields = {"YSWS", "Code URL", "Playable URL"}
-        local ships = airtable.list_all_records(SHIPS_TABLE, nil, shipParams, SHIPS_BASE_ID)
-        if not ships then
-            return lookupFailed(res, "Failed to look up ships")
+        local club, err, _, profile = publicClub(name)
+        if err then
+            return lookupFailed(res, "Failed to load this club from the Clubs platform")
         end
-        return ships.records
+        if club == nil or profile == nil then
+            return {}
+        end
+        return publicShips(profile)
     end
 end)
 
@@ -598,6 +780,11 @@ server:get("/member/ships", function(req, res)
     end
 end)
 
+local function findMember(field, value, fields)
+    local formula = activeMember(airtable.safeFormula(field, value))
+    return airtable.list_records("Members", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields}).records[1]
+end
+
 server:get("/member", function(req, res)
     log.request(req:uri(), req:headers())
     if auth.checkRead(req:headers().authorization) then
@@ -605,9 +792,7 @@ server:get("/member", function(req, res)
         if params.name == nil then
             return {error = "Missing name parameter"}
         end
-        local formula = airtable.safeFormula("name", params.name)
-        local fields = {"name", "club_name (from rel_club)", "email"}
-        local member = airtable.list_records("Members", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields}).records[1]
+        local member = findMember("name", params.name, {"name", "club_name (from rel_club)", "email"})
         if member == nil then
             return {error = "Member not found"}
         end
@@ -627,9 +812,7 @@ server:get("/member/email", function(req, res)
         if params.email == nil then
             return {error = "Missing email parameter"}
         end
-        local formula = airtable.safeFormula("email", params.email)
-        local fields = {"name", "club_name (from rel_club)"}
-        local member = airtable.list_records("Members", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields}).records[1]
+        local member = findMember("email", params.email, {"name", "club_name (from rel_club)"})
         if member == nil then
             return {error = "Member not found"}
         end
@@ -647,9 +830,7 @@ server:get("/member/name", function(req, res)
         if params.email == nil then
             return {error = "Missing email parameter"}
         end
-        local formula = airtable.safeFormula("email", params.email)
-        local fields = {"name"}
-        local member = airtable.list_records("Members", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields}).records[1]
+        local member = findMember("email", params.email, {"name"})
         if member == nil then
             return {error = "Member not found"}
         end
@@ -666,9 +847,7 @@ server:get("/member/slack", function(req, res)
         if params.slackid == nil then
             return {error = "Missing slackid parameter"}
         end
-        local formula = airtable.safeFormula("contact_slack", params.slackid)
-        local fields = {"name", "club_name (from rel_club)"}
-        local member = airtable.list_records("Members", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields}).records[1]
+        local member = findMember("contact_slack", params.slackid, {"name", "club_name (from rel_club)"})
         if member == nil then
             return {error = "Member not found"}
         end
@@ -695,13 +874,13 @@ local function fieldMatches(value, target)
     return false
 end
 
-local function firstMatching(records, field, value)
+local function firstMatching(records, field, value, accept)
     if not value then
         return nil
     end
     local target = value:lower()
     for _, record in ipairs(records) do
-        if fieldMatches(record.fields[field], target) then
+        if fieldMatches(record.fields[field], target) and (not accept or accept(record)) then
             return record
         end
     end
@@ -709,16 +888,6 @@ local function firstMatching(records, field, value)
 end
 
 local MAX_PERSON_EMAILS = 20
-
-local function firstString(value)
-    if type(value) == "table" then
-        value = value[1]
-    end
-    if type(value) == "string" and value ~= "" then
-        return value
-    end
-    return nil
-end
 
 local function anyOfFormula(conditions)
     local parts = {}
@@ -789,14 +958,14 @@ server:get("/person", function(req, res)
             return airtable.list_all_records("Leaders", nil, {
                 filterByFormula = anyOfFormula(leaderConditions),
                 timeZone = "America/New_York",
-                fields = {"contact_email", "contact_slack", "club_name (from rel_clubs)"},
+                fields = {"contact_email", "contact_slack", "rel_clubs", "club_name (from rel_clubs)"},
             })
         end,
         function()
             return airtable.list_all_records("Members", nil, {
-                filterByFormula = anyOfFormula(memberConditions),
+                filterByFormula = activeMember(anyOfFormula(memberConditions)),
                 timeZone = "America/New_York",
-                fields = {"email", "contact_slack", "name", "club_name (from rel_club)"},
+                fields = {"email", "contact_slack", "name", "member_type", "status", "club_name (from rel_club)"},
             })
         end,
     })
@@ -806,22 +975,39 @@ server:get("/person", function(req, res)
     end
 
     local matches = {leader = {}, member = {}}
-    local function match(role, records, field, value, clubField)
-        local record = firstMatching(records, field, value)
-        local clubName = record and firstString(record.fields[clubField]) or nil
-        table.insert(matches[role], {record = record, clubName = clubName})
-        return #matches[role]
+    local function hasClub(record)
+        return firstString(record.fields.rel_clubs) ~= nil
+    end
+    local function matchLeader(leaderField, memberField, value)
+        local found = {}
+        local record = firstMatching(leaders.records, leaderField, value, hasClub)
+        if record then
+            found = {record = record, clubName = firstString(record.fields["club_name (from rel_clubs)"]), role = "leader"}
+        else
+            record = firstMatching(members.records, memberField, value, isCoLeader)
+            if record then
+                found = {record = record, clubName = firstString(record.fields["club_name (from rel_club)"]), role = "co-leader"}
+            end
+        end
+        table.insert(matches.leader, found)
+        return #matches.leader
+    end
+    local function matchMember(field, value)
+        local record = firstMatching(members.records, field, value)
+        local clubName = record and firstString(record.fields["club_name (from rel_club)"]) or nil
+        table.insert(matches.member, {record = record, clubName = clubName})
+        return #matches.member
     end
 
     local leaderSlack, memberSlack
     local leaderByEmail, memberByEmail = {}, {}
     if slackId then
-        leaderSlack = match("leader", leaders.records, "contact_slack", slackId, "club_name (from rel_clubs)")
-        memberSlack = match("member", members.records, "contact_slack", slackId, "club_name (from rel_club)")
+        leaderSlack = matchLeader("contact_slack", "contact_slack", slackId)
+        memberSlack = matchMember("contact_slack", slackId)
     end
     for _, email in ipairs(emails) do
-        leaderByEmail[email] = match("leader", leaders.records, "contact_email", email, "club_name (from rel_clubs)")
-        memberByEmail[email] = match("member", members.records, "email", email, "club_name (from rel_club)")
+        leaderByEmail[email] = matchLeader("contact_email", "email", email)
+        memberByEmail[email] = matchMember("email", email)
     end
 
     local clubNames = {}
@@ -841,7 +1027,7 @@ server:get("/person", function(req, res)
         local snapshotFresh = os.time() - clubsSnapshot.refreshedAt <= CLUBS_MAX_STALENESS_SECONDS
         local snapshot = snapshotFresh and clubsSnapshot.byName or {}
         for _, name in ipairs(clubNames) do
-            local record = snapshot[name:lower()]
+            local record = snapshot[lowerTrim(name)]
             if record then
                 clubsByName[name:lower()] = record
             else
@@ -879,6 +1065,7 @@ server:get("/person", function(req, res)
             found = true,
             club_name = found.clubName,
             club_status = club and club.fields.status or nil,
+            role = found.role,
         }
     end
 
@@ -910,7 +1097,7 @@ server:get("/person", function(req, res)
     for _, name in ipairs(clubNames) do
         local record = clubsByName[name:lower()]
         if record then
-            result.clubs[name] = record
+            result.clubs[name] = withPlatformMemberCount(record)
         end
     end
     return result
@@ -990,7 +1177,7 @@ server:get("/members", function(req, res)
         if club == nil then
             return {error = "Club not found"}
         end
-        local memberFormula = airtable.safeFormula("club_name (from rel_club)", params.club_name)
+        local memberFormula = activeMember(airtable.safeFormula("club_name (from rel_club)", params.club_name))
         local memberResult = airtable.list_all_records("Members", nil, {filterByFormula = memberFormula, fields = {"name"}})
         if not memberResult then
             return lookupFailed(res, "Failed to look up club members")
@@ -1009,19 +1196,9 @@ end)
 
 -- LEVEL/STATUS MANAGEMENT
 
-server:get("/level", function(req)
+server:get("/level", function(req, res)
     log.request(req:uri(), req:headers())
-    local params = url.parse_query(req:uri())
-    if params.club_name == nil then
-        return {error = "Missing club_name parameter"}
-    end
-    local formula = airtable.safeFormula("club_name", params.club_name)
-    local fields = {"level"}
-    local level = airtable.list_records("Clubs", nil, {filterByFormula = formula, timeZone = "America/New_York", fields = fields}).records[1]
-    if level == nil then
-        return {level = "No club found"}
-    end
-    return {level = level.fields.level}
+    return retired(res)
 end)
 
 server:get("/status", function(req)
@@ -1051,7 +1228,7 @@ server:get("/dormant", function(req)
     if club == nil then
         return {error = "Club not found"}
     end
-    return {club_name = url.strip_quotes(params.club_name), dormant = club.fields.status == "Dormant"}
+    return {club_name = url.strip_quotes(params.club_name), dormant = isDormant(club)}
 end)
 
 ------------------
@@ -1161,20 +1338,7 @@ end)
 server:post("/level", function(req, res)
     log.request(req:uri(), req:headers())
     if auth.checkWrite(req:headers().authorization) then
-        local params = url.parse_query(req:uri())
-        local level = params.level
-        local club_name = params.club_name
-        if level == nil or club_name == nil then
-            return {error = "Missing parameters"}
-        end
-        local formula = airtable.safeFormula("club_name", club_name)
-        local club = airtable.list_records("Clubs", nil, {filterByFormula = formula}).records[1]
-        if club == nil then
-            return {error = "Club not found"}
-        end
-        local id = club.id
-        local updateClub = airtable.update_record("Clubs", id, {level = url.strip_quotes(level)})
-        return {new_level = updateClub.fields.level}
+        return retired(res)
     else
         return unauthorized(res)
     end
