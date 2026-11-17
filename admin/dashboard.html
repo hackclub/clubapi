@@ -51,6 +51,8 @@
       }
       header h1 { margin: 0; font-size: 18px; }
       header h1 span { color: var(--red); }
+      header h1 a { color: inherit; text-decoration: none; }
+      header h1 a:hover, header h1 a:focus-visible { text-decoration: underline; }
       .who { display: flex; align-items: center; gap: 12px; color: var(--muted); }
       nav { display: flex; gap: 4px; padding: 12px 24px 0; flex-wrap: wrap; }
       nav button {
@@ -190,7 +192,7 @@
   </head>
   <body>
     <header>
-      <h1><span>Clubs API</span> Admin</h1>
+      <h1><a href="/admin"><span>Clubs API</span> Admin</a></h1>
       <div class="who">
         <span id="who"></span>
         <button class="btn small" id="logout">Sign out</button>
