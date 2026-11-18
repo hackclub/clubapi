@@ -4,6 +4,8 @@ local db = {}
 
 local conn = nil
 
+local ROLE_CHECK = "CHECK (role IN ('superadmin', 'admin', 'keyholder'))"
+
 local MIGRATIONS = {
     "CREATE TABLE IF NOT EXISTS api_keys (key text PRIMARY KEY, name text, perms text NOT NULL)",
     "ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS id bigserial",
@@ -33,9 +35,8 @@ local MIGRATIONS = {
     "CREATE TABLE IF NOT EXISTS admins (" ..
         "id bigserial PRIMARY KEY, " ..
         "name text NOT NULL, " ..
-        "is_superadmin boolean NOT NULL DEFAULT false, " ..
+        "role text NOT NULL DEFAULT 'keyholder' " .. ROLE_CHECK .. ", " ..
         "created_at timestamptz NOT NULL DEFAULT now())",
-    "CREATE UNIQUE INDEX IF NOT EXISTS admins_single_superadmin_idx ON admins (is_superadmin) WHERE is_superadmin",
     "CREATE TABLE IF NOT EXISTS admin_emails (" ..
         "email text PRIMARY KEY, " ..
         "admin_id bigint NOT NULL REFERENCES admins (id) ON DELETE CASCADE, " ..
@@ -52,6 +53,15 @@ local MIGRATIONS = {
         "key_name text, " ..
         "detail text, " ..
         "created_at timestamptz NOT NULL DEFAULT now())",
+    -- Roles replace the old admins.is_superadmin boolean. Existing non-superadmins become keyholders,
+    -- which keeps what they can see unchanged; the superadmin promotes the ones who should be admins.
+    "ALTER TABLE admins ADD COLUMN IF NOT EXISTS role text " .. ROLE_CHECK,
+    "UPDATE admins a SET role = CASE WHEN to_jsonb(a) ->> 'is_superadmin' = 'true' THEN 'superadmin' ELSE 'keyholder' END " ..
+        "WHERE role IS NULL",
+    "ALTER TABLE admins ALTER COLUMN role SET DEFAULT 'keyholder'",
+    "ALTER TABLE admins ALTER COLUMN role SET NOT NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS admins_single_superadmin_role_idx ON admins (role) WHERE role = 'superadmin'",
+    "ALTER TABLE admins DROP COLUMN IF EXISTS is_superadmin",
 }
 
 function db.get()
