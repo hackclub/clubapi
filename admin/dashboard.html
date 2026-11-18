@@ -183,8 +183,9 @@
       .chip button:hover { color: var(--red); }
       .inline-form { display: flex; gap: 6px; margin-top: 8px; }
       .inline-form input { padding: 4px 8px; font-size: 13px; min-width: 200px; }
-      .role-super { background: rgba(236, 55, 80, 0.16); color: var(--red); }
+      .role-superadmin { background: rgba(236, 55, 80, 0.16); color: var(--red); }
       .role-admin { background: rgba(51, 142, 218, 0.16); color: var(--blue); }
+      .role-keyholder { background: rgba(132, 146, 166, 0.2); color: var(--muted); }
       @media (max-width: 640px) {
         header, nav, main { padding-left: 16px; padding-right: 16px; }
       }
@@ -195,21 +196,22 @@
       <h1><a href="/admin"><span>Clubs API</span> Admin</a></h1>
       <div class="who">
         <span id="who"></span>
+        <span id="who-role"></span>
         <button class="btn small" id="logout">Sign out</button>
       </div>
     </header>
 
     <div class="banner" id="impersonation" hidden>
       <span id="impersonation-text"></span>
-      <button class="btn small" id="impersonation-stop">Stop viewing as admin</button>
+      <button class="btn small" id="impersonation-stop">Stop viewing as them</button>
     </div>
 
     <nav>
       <button data-tab="overview" class="active">Overview</button>
       <button data-tab="keys">API keys</button>
       <button data-tab="requests">Requests</button>
-      <button data-tab="admins" data-super hidden>Admins</button>
-      <button data-tab="audit" data-super hidden>Audit log</button>
+      <button data-tab="admins" data-can="manage_people" hidden>People</button>
+      <button data-tab="audit" data-can="view_audit" hidden>Audit log</button>
     </nav>
 
     <main>
@@ -233,33 +235,38 @@
       </section>
 
       <section id="tab-keys">
-        <div class="card">
+        <div class="card" data-can="create_keys" hidden>
           <h2>Create a key</h2>
           <form class="toolbar" id="create-form">
             <input type="text" id="new-name" placeholder="Key name (e.g. project or person)" required maxlength="200" />
             <select id="new-perms"></select>
-            <select id="new-owner" data-super hidden></select>
+            <select id="new-owner" data-can="assign_keys" hidden></select>
             <button class="btn primary" type="submit">Create key</button>
           </form>
         </div>
         <div class="card">
           <h2 id="keys-title">All keys</h2>
+          <p class="muted" id="keys-note" style="margin: -4px 0 12px" hidden></p>
           <div class="table-wrap"><table id="keys-table"></table></div>
         </div>
       </section>
 
       <section id="tab-admins">
         <div class="card">
-          <h2>Invite an admin</h2>
+          <h2>Invite someone</h2>
           <form class="toolbar" id="invite-form">
             <input type="text" id="invite-name" placeholder="Name" required maxlength="100" />
             <input type="text" id="invite-email" placeholder="Email they sign in with" required maxlength="254" />
-            <button class="btn primary" type="submit">Add admin</button>
+            <select id="invite-role">
+              <option value="keyholder">keyholder</option>
+              <option value="admin">admin</option>
+            </select>
+            <button class="btn primary" type="submit">Add person</button>
           </form>
-          <p class="muted" style="margin: 0">Admins sign in with Hack Club Auth using any of their emails. They only see keys they own, can only create read or write keys, and only see the start of each key.</p>
+          <p class="muted" style="margin: 0">Everyone signs in with Hack Club Auth using any of their emails. <strong>Keyholders</strong> see the keys you assign them and those keys' requests, and can't change anything. <strong>Admins</strong> see every key and every request, and can create, rotate, rename and delete their own read or write keys. Neither can see a full key again after it's created or rotated.</p>
         </div>
         <div class="card">
-          <h2>Admins</h2>
+          <h2>People</h2>
           <div class="table-wrap"><table id="admins-table"></table></div>
         </div>
       </section>
@@ -308,7 +315,8 @@
     <script>
       const state = { me: null, keys: [], admins: [], requestsBefore: "" };
       const ALL_PERMS = ["read", "write", "admin"];
-      const ADMIN_PERMS = ["read", "write"];
+      const DELEGABLE_PERMS = ["read", "write"];
+      const ASSIGNABLE_ROLES = ["keyholder", "admin"];
 
       function el(tag, props, ...children) {
         const node = document.createElement(tag);
@@ -328,8 +336,26 @@
         return Array.isArray(value) ? value : [];
       }
 
-      function isSuper() {
-        return Boolean(state.me && state.me.is_superadmin);
+      // What this role may do, straight from the server's capability table: "all", "own", true or undefined.
+      function can(capability) {
+        return (state.me && state.me.capabilities && state.me.capabilities[capability]) || false;
+      }
+
+      function isMine(key) {
+        return key.owner_admin_id != null && String(key.owner_admin_id) === String(state.me.admin_id);
+      }
+
+      function canManage(key) {
+        const scope = can("manage_keys");
+        return scope === "all" || (scope === "own" && isMine(key));
+      }
+
+      function grantablePerms() {
+        return can("grant_admin_perms") ? ALL_PERMS : DELEGABLE_PERMS;
+      }
+
+      function roleBadge(role) {
+        return el("span", { class: "badge role-" + role }, role);
       }
 
       function num(value) {
@@ -423,15 +449,24 @@
         return el("span", { class: "muted" }, "anonymous");
       }
 
+      function ownerCell(key) {
+        if (can("assign_keys")) {
+          const owner = el("select", { onchange: () => changeOwner(key, owner) }, ownerOptions(key.owner_admin_id));
+          return owner;
+        }
+        if (isMine(key)) return "You";
+        return key.owner_name || el("span", { class: "muted" }, "Unassigned");
+      }
+
       function ownerOptions(selected) {
         return [
           el("option", { value: "", selected: !selected }, "Unassigned"),
-          ...state.admins.map((a) => el("option", { value: String(a.id), selected: String(selected) === String(a.id) }, a.name + (a.is_superadmin ? " (you)" : ""))),
+          ...state.admins.map((a) => el("option", { value: String(a.id), selected: String(selected) === String(a.id) }, a.name + (String(a.id) === String(state.me.admin_id) ? " (you)" : ""))),
         ];
       }
 
       async function loadAdminsList() {
-        if (!isSuper()) return;
+        if (!can("manage_people")) return;
         const data = await api("/admin/api/admins");
         state.admins = list(data.admins);
       }
@@ -442,10 +477,10 @@
         const tiles = [
           ["Requests (24h)", t.last_24h],
           ["Errors (24h)", t.errors_24h],
-          isSuper() && ["Invalid keys (24h)", t.invalid_keys_24h],
-          isSuper() && ["Rate limited (24h)", t.rate_limited_24h],
+          can("view_requests") === "all" && ["Invalid keys (24h)", t.invalid_keys_24h],
+          can("view_requests") === "all" && ["Rate limited (24h)", t.rate_limited_24h],
           ["Requests logged", t.total],
-          [isSuper() ? "API keys" : "Your keys", t.keys],
+          [can("view_keys") === "all" ? "API keys" : "Your keys", t.keys],
         ].filter(Boolean);
         document.getElementById("stats").replaceChildren(
           ...tiles.map(([label, value]) => el("div", { class: "stat" }, el("div", { class: "label" }, label), el("div", { class: "value" }, num(value))))
@@ -534,8 +569,8 @@
       }
 
       function permsCell(key) {
-        if (!isSuper() && key.perms === "admin") return permBadge("admin");
-        const options = isSuper() ? ALL_PERMS : ADMIN_PERMS;
+        const options = grantablePerms();
+        if (!canManage(key) || !options.includes(key.perms)) return permBadge(key.perms);
         const select = el("select", { onchange: () => changePerms(key, select) },
           options.map((p) => el("option", { value: p, selected: p === key.perms }, p)));
         return select;
@@ -545,7 +580,8 @@
         const data = await api("/admin/api/keys");
         state.keys = list(data.keys);
         const headers = [{ label: "Name" }, { label: "Key" }, { label: "Perms" }];
-        if (isSuper()) headers.push({ label: "Owner" });
+        const showOwner = can("view_keys") === "all";
+        if (showOwner) headers.push({ label: "Owner" });
         headers.push({ label: "Created" }, { label: "Last used" }, { label: "7d", num: true }, { label: "7d errors", num: true }, { label: "Total", num: true }, { label: "" });
 
         table("keys-table", headers, state.keys.map((key) => {
@@ -554,10 +590,8 @@
             el("td", {}, el("code", { title: key.rotated_at ? "Rotated " + new Date(key.rotated_at).toLocaleString() : null }, maskedKey(key))),
             el("td", {}, permsCell(key)),
           ];
-          if (isSuper()) {
-            const owner = el("select", { onchange: () => changeOwner(key, owner) }, ownerOptions(key.owner_admin_id));
-            cells.push(el("td", {}, owner));
-          }
+          if (showOwner) cells.push(el("td", {}, ownerCell(key)));
+          const manage = canManage(key);
           cells.push(
             el("td", { title: key.created_by_name ? "Created by " + key.created_by_name : null }, when(key.created_at)),
             el("td", {}, ago(key.last_used_at)),
@@ -566,14 +600,15 @@
             el("td", { class: "num" }, num(key.requests_total)),
             el("td", {}, el("div", { class: "actions" },
               el("button", { class: "btn small", onclick: () => viewRequests(key) }, "Requests"),
-              isSuper() && el("button", { class: "btn small", onclick: () => revealKey(key) }, "Reveal"),
-              el("button", { class: "btn small", onclick: () => rotateKey(key) }, "Rotate"),
-              el("button", { class: "btn small", onclick: () => renameKey(key) }, "Rename"),
-              el("button", { class: "btn small danger", onclick: () => deleteKey(key) }, "Delete")
+              can("reveal_keys") && el("button", { class: "btn small", onclick: () => revealKey(key) }, "Reveal"),
+              manage && el("button", { class: "btn small", onclick: () => rotateKey(key) }, "Rotate"),
+              manage && el("button", { class: "btn small", onclick: () => renameKey(key) }, "Rename"),
+              manage && el("button", { class: "btn small danger", onclick: () => deleteKey(key) }, "Delete")
             ))
           );
           return el("tr", {}, cells);
-        }), isSuper() ? "No API keys yet" : "You don't have any keys yet");
+        }), can("view_keys") === "all" ? "No API keys yet"
+          : can("create_keys") ? "You don't have any keys yet" : "No keys have been assigned to you yet");
         renderKeyFilter();
       }
 
@@ -581,9 +616,9 @@
         const select = document.getElementById("filter-key");
         const current = select.value || "all";
         select.replaceChildren(
-          el("option", { value: "all" }, isSuper() ? "All callers" : "All your keys"),
-          isSuper() && el("option", { value: "anonymous" }, "Anonymous"),
-          isSuper() && el("option", { value: "invalid" }, "Invalid keys"),
+          el("option", { value: "all" }, can("view_requests") === "all" ? "All callers" : "All your keys"),
+          can("view_requests") === "all" && el("option", { value: "anonymous" }, "Anonymous"),
+          can("view_requests") === "all" && el("option", { value: "invalid" }, "Invalid keys"),
           ...state.keys.map((key) => el("option", { value: String(key.id) }, (key.name || "unnamed") + " (" + key.perms + ")"))
         );
         select.value = [...select.options].some((o) => o.value === current) ? current : "all";
@@ -641,16 +676,36 @@
       }
 
       async function renameAdmin(adminRow) {
-        const name = prompt("Name for this admin", adminRow.name);
+        const name = prompt("Name for this person", adminRow.name);
         if (name === null || name.trim() === "" || name.trim() === adminRow.name) return;
-        await act(() => api("/admin/api/admins/rename", { id: adminRow.id, name: name.trim() }), "Admin renamed");
+        await act(() => api("/admin/api/admins/rename", { id: adminRow.id, name: name.trim() }), "Renamed");
         await loadAdmins();
       }
 
       async function removeAdmin(adminRow) {
-        if (!confirm("Remove " + adminRow.name + " as an admin? Their keys keep working but become unassigned.")) return;
-        await act(() => api("/admin/api/admins/delete", { id: adminRow.id }), "Admin removed");
+        if (!confirm("Remove " + adminRow.name + "? Their keys keep working but become unassigned.")) return;
+        await act(() => api("/admin/api/admins/delete", { id: adminRow.id }), adminRow.name + " removed");
         await loadAdmins();
+      }
+
+      async function changeRole(adminRow, select) {
+        const role = select.value;
+        const effect = role === "admin"
+          ? "They'll see every key and every request, and can create and manage their own keys."
+          : "They'll only see their own keys and those keys' requests, and won't be able to create or change keys.";
+        if (!confirm("Make " + adminRow.name + " " + (role === "admin" ? "an admin" : "a keyholder") + "? " + effect)) {
+          select.value = adminRow.role;
+          return;
+        }
+        await act(() => api("/admin/api/admins/role", { id: adminRow.id, role }), adminRow.name + " is now " + (role === "admin" ? "an admin" : "a keyholder"));
+        await loadAdmins();
+      }
+
+      function roleCell(adminRow) {
+        if (!ASSIGNABLE_ROLES.includes(adminRow.role)) return roleBadge(adminRow.role);
+        const select = el("select", { onchange: () => changeRole(adminRow, select) },
+          ASSIGNABLE_ROLES.map((r) => el("option", { value: r, selected: r === adminRow.role }, r)));
+        return select;
       }
 
       async function impersonate(adminRow) {
@@ -670,7 +725,7 @@
             input.addEventListener("keydown", (e) => { if (e.key === "Enter") addEmail(a, input); });
             return el("tr", {},
               el("td", {}, a.name),
-              el("td", {}, el("span", { class: "badge " + (a.is_superadmin ? "role-super" : "role-admin") }, a.is_superadmin ? "superadmin" : "admin")),
+              el("td", {}, roleCell(a)),
               el("td", { class: "wrap" },
                 el("div", { class: "chips" }, emails.map((email) =>
                   el("span", { class: "chip" + (emails.length > 1 ? "" : " locked") }, email,
@@ -682,16 +737,16 @@
               el("td", {}, el("div", { class: "actions" },
                 el("button", { class: "btn small", onclick: () => impersonate(a) }, "View as"),
                 el("button", { class: "btn small", onclick: () => renameAdmin(a) }, "Rename"),
-                !a.is_superadmin && el("button", { class: "btn small danger", onclick: () => removeAdmin(a) }, "Remove")
+                a.role !== "superadmin" && el("button", { class: "btn small danger", onclick: () => removeAdmin(a) }, "Remove")
               ))
             );
           }),
-          "No admins yet");
+          "Nobody yet");
       }
 
       async function loadAudit() {
         const data = await api("/admin/api/audit");
-        table("audit-table", [{ label: "Time" }, { label: "Admin" }, { label: "Action" }, { label: "Key" }, { label: "Detail" }],
+        table("audit-table", [{ label: "Time" }, { label: "Who" }, { label: "Action" }, { label: "Key" }, { label: "Detail" }],
           list(data.entries).map((a) => el("tr", {},
             el("td", {}, when(a.created_at)),
             el("td", {}, a.actor_email),
@@ -718,12 +773,20 @@
       function applyRole() {
         const me = state.me;
         document.getElementById("who").textContent = me.impersonating ? me.email + " (as " + me.name + ")" : me.email;
-        document.querySelectorAll("[data-super]").forEach((node) => { node.hidden = !isSuper(); });
-        document.getElementById("keys-title").textContent = isSuper() ? "All keys" : "Your keys";
+        document.getElementById("who-role").replaceChildren(roleBadge(me.role));
+        document.querySelectorAll("[data-can]").forEach((node) => { node.hidden = !can(node.dataset.can); });
+        document.getElementById("keys-title").textContent = can("view_keys") === "all" ? "All keys" : "Your keys";
+        const note = document.getElementById("keys-note");
+        note.textContent = !can("manage_keys")
+          ? "These keys were assigned to you. Ask an admin if one needs rotating or replacing."
+          : can("manage_keys") === "own" && can("view_keys") === "all"
+            ? "You can see every key, and rotate, rename or delete the ones you own."
+            : "";
+        note.hidden = !note.textContent;
         document.getElementById("new-perms").replaceChildren(
-          ...(isSuper() ? ALL_PERMS : ADMIN_PERMS).map((p) => el("option", { value: p }, p))
+          ...grantablePerms().map((p) => el("option", { value: p }, p))
         );
-        if (isSuper()) {
+        if (can("assign_keys")) {
           document.getElementById("new-owner").replaceChildren(...ownerOptions(me.admin_id));
         }
         const banner = document.getElementById("impersonation");
@@ -746,7 +809,7 @@
         const perms = document.getElementById("new-perms").value;
         if (!name) return;
         const body = { name, perms };
-        if (isSuper()) {
+        if (can("assign_keys")) {
           const owner = document.getElementById("new-owner").value;
           body.owner_id = owner ? Number(owner) : "";
         }
@@ -763,7 +826,8 @@
         const name = document.getElementById("invite-name").value.trim();
         const email = document.getElementById("invite-email").value.trim();
         if (!name || !email) return;
-        const done = await act(() => api("/admin/api/admins/create", { name, email }), name + " can now sign in");
+        const role = document.getElementById("invite-role").value;
+        const done = await act(() => api("/admin/api/admins/create", { name, email, role }), name + " can now sign in");
         if (done) {
           document.getElementById("invite-name").value = "";
           document.getElementById("invite-email").value = "";
