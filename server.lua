@@ -1425,8 +1425,9 @@ local ADMIN_REQUEST_HEADER = "clubapi-admin"
 local MAX_KEY_NAME_LENGTH = 200
 
 local ADMIN_ERRORS = {
-    email_taken = "That email already belongs to an admin",
-    not_removable = "An admin needs at least one email; remove the admin instead",
+    email_taken = "That email already belongs to someone",
+    not_removable = "Everyone needs at least one email; remove the person instead",
+    invalid_role = "Role must be admin or keyholder",
 }
 
 local adminPages = {
@@ -1477,22 +1478,24 @@ local function sameId(a, b)
     return a ~= nil and b ~= nil and tostring(a) == tostring(b)
 end
 
-local function ownerScope(ctx)
-    if ctx.actor.is_superadmin then
+-- Owner filter for a view capability: nil means every key, otherwise only the actor's own.
+local function viewScope(ctx, capability)
+    if admin.can(ctx.actor, capability) == "all" then
         return nil
     end
     return ctx.actor.id
 end
 
-local function managedKey(ctx, id)
+local function managedKey(ctx, res, id)
     local key = auth.getKeyById(id)
     if not key then
-        return nil
+        return nil, failure(res, 404, "Key not found")
     end
-    if ctx.actor.is_superadmin or sameId(key.owner_admin_id, ctx.actor.id) then
+    local scope = admin.can(ctx.actor, "manage_keys")
+    if scope == "all" or (scope == "own" and sameId(key.owner_admin_id, ctx.actor.id)) then
         return key
     end
-    return nil
+    return nil, failure(res, 403, "You can only manage your own keys")
 end
 
 local function auditAs(ctx, action, key, detail)
@@ -1515,11 +1518,11 @@ local function adminOnly(handler, options)
         if options.mutating and req:headers()["x-requested-with"] ~= ADMIN_REQUEST_HEADER then
             return failure(res, 403, "Missing admin request header")
         end
-        if options.superadmin and not ctx.actor.is_superadmin then
-            return failure(res, 403, "Only the superadmin can do that")
+        if options.can and not admin.can(ctx.actor, options.can) then
+            return failure(res, 403, "Your role can't do that")
         end
-        if options.realSuperadmin and not ctx.real.is_superadmin then
-            return failure(res, 403, "Only the superadmin can do that")
+        if options.realCan and not admin.can(ctx.real, options.realCan) then
+            return failure(res, 403, "Your role can't do that")
         end
         return handler(req, res, ctx)
     end
@@ -1535,12 +1538,69 @@ local function validOwner(value)
     return nil
 end
 
+local DEV_LOGIN = admin.devLoginEnabled()
+if DEV_LOGIN then
+    adminPages.login = adminPages.login:gsub("<!%-%- dev%-login %-%->", function()
+        return '<a class="dev" href="/admin/dev-login">Dev login (local only)</a>'
+    end)
+end
+
 rawGet(server, "/admin", function(req, res)
     if admin.session(req) then
         return html(res, adminPages.dashboard)
     end
     return html(res, adminPages.login)
 end)
+
+-- Local testing only: signs in as any existing person without Hack Club Auth. The route isn't even
+-- registered unless ADMIN_DEV_LOGIN is on and PUBLIC_URL and DATABASE_URL are both local (see
+-- admin.devLoginEnabled), and it also turns away connections that don't come from this machine.
+if DEV_LOGIN then
+    print("WARNING: /admin/dev-login is enabled. Anyone who can reach this server can sign in as any admin.")
+
+    local function escapeHtml(value)
+        return (tostring(value):gsub("[&<>\"']", {
+            ["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;", ['"'] = "&quot;", ["'"] = "&#39;",
+        }))
+    end
+
+    rawGet(server, "/admin/dev-login", function(req, res)
+        local peer = req:ip_address()
+        if not admin.isLoopbackAddress(peer and peer.address) then
+            return failure(res, 403, "Dev login only works on localhost")
+        end
+
+        local requested = url.strip_quotes(url.parse_query(req:uri()).email)
+        if not requested then
+            local links = {}
+            for _, person in ipairs(admin.listAdmins() or {}) do
+                local email = person.emails[1]
+                if email then
+                    table.insert(links, '<li><a href="/admin/dev-login?email=' .. escapeHtml(admin.urlEncode(email)) .. '">'
+                        .. escapeHtml(person.name) .. "</a> (" .. escapeHtml(person.role) .. ", " .. escapeHtml(email) .. ")</li>")
+                end
+            end
+            if #links == 0 then
+                table.insert(links, "<li>Nobody yet. Run <code>astra run scripts/seed.lua</code> first.</li>")
+            end
+            return html(res, "<!doctype html><meta charset=\"utf-8\"><title>Dev login</title>"
+                .. "<body style=\"font-family: system-ui; max-width: 480px; margin: 48px auto; line-height: 1.8\">"
+                .. "<h1>Dev login</h1><p>Sign in as:</p><ul>" .. table.concat(links) .. "</ul></body>")
+        end
+
+        local email = admin.normalizeEmail(requested)
+        if not email or not admin.findByEmail(email) then
+            return redirect(res, "/admin?error=not_allowed")
+        end
+        local session = admin.createSession(email)
+        if not session then
+            return redirect(res, "/admin?error=auth_failed")
+        end
+        admin.audit(email, "login", nil, "dev login")
+        res:set_header("Set-Cookie", admin.cookieHeader(admin.SESSION_COOKIE, session, admin.SESSION_TTL_SECONDS))
+        return redirect(res, "/admin")
+    end)
+end
 
 rawGet(server, "/admin/login", function(req, res)
     if not admin.isConfigured() then
@@ -1610,24 +1670,25 @@ rawGet(server, "/admin/api/me", adminOnly(function(_, _, ctx)
         email = ctx.email,
         admin_id = ctx.actor.id,
         name = ctx.actor.name,
-        is_superadmin = ctx.actor.is_superadmin,
+        role = ctx.actor.role,
+        capabilities = admin.capabilities(ctx.actor.role),
         impersonating = ctx.impersonating,
         real_name = ctx.real.name,
-        real_is_superadmin = ctx.real.is_superadmin,
+        real_role = ctx.real.role,
     }
 end))
 
 rawPost(server, "/admin/api/impersonate", adminOnly(function(req, res, ctx)
     local target = jsonBody(req).id
     if not admin.exists(target) then
-        return failure(res, 404, "Admin not found")
+        return failure(res, 404, "Person not found")
     end
     if not admin.setImpersonation(req, target) then
         return failure(res, 500, "Couldn't start impersonating")
     end
     admin.audit(ctx.email, "impersonate.start", nil, "admin #" .. tostring(target))
     return {success = true}
-end, {mutating = true, realSuperadmin = true}))
+end, {mutating = true, realCan = "impersonate"}))
 
 rawPost(server, "/admin/api/impersonate/stop", adminOnly(function(req, res, ctx)
     if not admin.setImpersonation(req, nil) then
@@ -1637,29 +1698,30 @@ rawPost(server, "/admin/api/impersonate/stop", adminOnly(function(req, res, ctx)
         admin.audit(ctx.email, "impersonate.stop", nil, "was viewing as " .. tostring(ctx.actor.name))
     end
     return {success = true}
-end, {mutating = true, realSuperadmin = true}))
+end, {mutating = true, realCan = "impersonate"}))
 
 rawGet(server, "/admin/api/overview", adminOnly(function(_, res, ctx)
-    local overview = requestlog.overview(ownerScope(ctx))
+    local overview = requestlog.overview(viewScope(ctx, "view_requests"))
     if not overview then
         return failure(res, 500, "Couldn't load overview")
     end
     return overview
-end))
+end, {can = "view_requests"}))
 
 rawGet(server, "/admin/api/keys", adminOnly(function(_, res, ctx)
-    local keys = auth.listKeys(ownerScope(ctx))
+    local keys = auth.listKeys(viewScope(ctx, "view_keys"))
     if not keys then
         return failure(res, 500, "Couldn't load keys")
     end
-    if not ctx.actor.is_superadmin then
+    -- Only a role that could reveal the whole key anyway gets more than its first few characters.
+    if not admin.can(ctx.actor, "reveal_keys") then
         for _, key in ipairs(keys) do
             key.key_suffix = nil
             key.created_by_name = nil
         end
     end
     return {keys = keys}
-end))
+end, {can = "view_keys"}))
 
 rawPost(server, "/admin/api/keys/create", adminOnly(function(req, res, ctx)
     local body = jsonBody(req)
@@ -1668,17 +1730,20 @@ rawPost(server, "/admin/api/keys/create", adminOnly(function(req, res, ctx)
         return failure(res, 400, "Name is required (max " .. MAX_KEY_NAME_LENGTH .. " characters)")
     end
 
-    local owner = ctx.actor.id
-    if ctx.actor.is_superadmin then
+    if admin.can(ctx.actor, "grant_admin_perms") then
         if not auth.isValidPerms(body.perms) then
             return failure(res, 400, "Perms must be read, write, or admin")
         end
-        owner = validOwner(body.owner_id)
-        if owner == nil then
-            return failure(res, 400, "Owner must be one of your admins")
-        end
     elseif not auth.isDelegablePerms(body.perms) then
         return failure(res, 403, "You can only create read or write keys")
+    end
+
+    local owner = ctx.actor.id
+    if admin.can(ctx.actor, "assign_keys") then
+        owner = validOwner(body.owner_id)
+        if owner == nil then
+            return failure(res, 400, "Owner must be someone on the People list")
+        end
     end
 
     local created, err = auth.createKey(name, body.perms, owner, ctx.real.id)
@@ -1687,12 +1752,12 @@ rawPost(server, "/admin/api/keys/create", adminOnly(function(req, res, ctx)
     end
     auditAs(ctx, "key.create", created, "perms: " .. created.perms)
     return {id = created.id, name = created.name, perms = created.perms, key = created.key}
-end, {mutating = true}))
+end, {mutating = true, can = "create_keys"}))
 
 rawPost(server, "/admin/api/keys/rotate", adminOnly(function(req, res, ctx)
-    local key = managedKey(ctx, jsonBody(req).id)
+    local key, denied = managedKey(ctx, res, jsonBody(req).id)
     if not key then
-        return failure(res, 404, "Key not found")
+        return denied
     end
     local rotated = auth.rotateKeyById(key.id)
     if not rotated then
@@ -1700,15 +1765,15 @@ rawPost(server, "/admin/api/keys/rotate", adminOnly(function(req, res, ctx)
     end
     auditAs(ctx, "key.rotate", rotated)
     return {id = rotated.id, name = rotated.name, perms = rotated.perms, key = rotated.key}
-end, {mutating = true}))
+end, {mutating = true, can = "manage_keys"}))
 
 rawPost(server, "/admin/api/keys/perms", adminOnly(function(req, res, ctx)
     local body = jsonBody(req)
-    local key = managedKey(ctx, body.id)
+    local key, denied = managedKey(ctx, res, body.id)
     if not key then
-        return failure(res, 404, "Key not found")
+        return denied
     end
-    if ctx.actor.is_superadmin then
+    if admin.can(ctx.actor, "grant_admin_perms") then
         if not auth.isValidPerms(body.perms) then
             return failure(res, 400, "Perms must be read, write, or admin")
         end
@@ -1726,7 +1791,7 @@ rawPost(server, "/admin/api/keys/perms", adminOnly(function(req, res, ctx)
     end
     auditAs(ctx, "key.perms", updated, tostring(updated.old_perms) .. " -> " .. updated.perms)
     return {id = updated.id, name = updated.name, perms = updated.perms}
-end, {mutating = true}))
+end, {mutating = true, can = "manage_keys"}))
 
 rawPost(server, "/admin/api/keys/rename", adminOnly(function(req, res, ctx)
     local body = jsonBody(req)
@@ -1734,9 +1799,9 @@ rawPost(server, "/admin/api/keys/rename", adminOnly(function(req, res, ctx)
     if not name then
         return failure(res, 400, "Name is required (max " .. MAX_KEY_NAME_LENGTH .. " characters)")
     end
-    local key = managedKey(ctx, body.id)
+    local key, denied = managedKey(ctx, res, body.id)
     if not key then
-        return failure(res, 404, "Key not found")
+        return denied
     end
     local renamed = auth.renameKeyById(key.id, name)
     if not renamed then
@@ -1744,12 +1809,12 @@ rawPost(server, "/admin/api/keys/rename", adminOnly(function(req, res, ctx)
     end
     auditAs(ctx, "key.rename", renamed, tostring(renamed.old_name) .. " -> " .. renamed.name)
     return {id = renamed.id, name = renamed.name, perms = renamed.perms}
-end, {mutating = true}))
+end, {mutating = true, can = "manage_keys"}))
 
 rawPost(server, "/admin/api/keys/delete", adminOnly(function(req, res, ctx)
-    local key = managedKey(ctx, jsonBody(req).id)
+    local key, denied = managedKey(ctx, res, jsonBody(req).id)
     if not key then
-        return failure(res, 404, "Key not found")
+        return denied
     end
     local deleted = auth.deleteKeyById(key.id)
     if not deleted then
@@ -1757,13 +1822,13 @@ rawPost(server, "/admin/api/keys/delete", adminOnly(function(req, res, ctx)
     end
     auditAs(ctx, "key.delete", deleted, "perms: " .. deleted.perms)
     return {success = true, id = deleted.id}
-end, {mutating = true}))
+end, {mutating = true, can = "manage_keys"}))
 
 rawPost(server, "/admin/api/keys/owner", adminOnly(function(req, res, ctx)
     local body = jsonBody(req)
     local owner = validOwner(body.owner_id)
     if owner == nil then
-        return failure(res, 400, "Owner must be one of your admins")
+        return failure(res, 400, "Owner must be someone on the People list")
     end
     local updated, err = auth.setOwnerById(body.id, owner)
     if not updated then
@@ -1771,7 +1836,7 @@ rawPost(server, "/admin/api/keys/owner", adminOnly(function(req, res, ctx)
     end
     auditAs(ctx, "key.owner", updated, owner == "" and "unassigned" or ("admin #" .. owner))
     return {id = updated.id, owner_admin_id = updated.owner_admin_id}
-end, {mutating = true, superadmin = true}))
+end, {mutating = true, can = "assign_keys"}))
 
 rawPost(server, "/admin/api/keys/reveal", adminOnly(function(req, res, ctx)
     local revealed = auth.revealKeyById(jsonBody(req).id)
@@ -1780,12 +1845,12 @@ rawPost(server, "/admin/api/keys/reveal", adminOnly(function(req, res, ctx)
     end
     auditAs(ctx, "key.reveal", revealed)
     return {id = revealed.id, name = revealed.name, perms = revealed.perms, key = revealed.key}
-end, {mutating = true, superadmin = true}))
+end, {mutating = true, can = "reveal_keys"}))
 
 rawGet(server, "/admin/api/requests", adminOnly(function(req, res, ctx)
     local params = url.parse_query(req:uri())
     local rows, limit = requestlog.list({
-        owner = ownerScope(ctx),
+        owner = viewScope(ctx, "view_requests"),
         key = url.strip_quotes(params.key),
         status = url.strip_quotes(params.status),
         path = url.strip_quotes(params.path),
@@ -1800,7 +1865,7 @@ rawGet(server, "/admin/api/requests", adminOnly(function(req, res, ctx)
         nextBefore = rows[#rows].id
     end
     return {requests = rows, next_before = nextBefore}
-end))
+end, {can = "view_requests"}))
 
 rawGet(server, "/admin/api/audit", adminOnly(function(_, res)
     local entries = admin.auditLog()
@@ -1808,7 +1873,7 @@ rawGet(server, "/admin/api/audit", adminOnly(function(_, res)
         return failure(res, 500, "Couldn't load audit log")
     end
     return {entries = entries}
-end, {superadmin = true}))
+end, {can = "view_audit"}))
 
 rawGet(server, "/admin/api/admins", adminOnly(function(_, res)
     local admins = admin.listAdmins()
@@ -1816,7 +1881,7 @@ rawGet(server, "/admin/api/admins", adminOnly(function(_, res)
         return failure(res, 500, "Couldn't load admins")
     end
     return {admins = admins}
-end, {superadmin = true}))
+end, {can = "manage_people"}))
 
 rawPost(server, "/admin/api/admins/create", adminOnly(function(req, res, ctx)
     local body = jsonBody(req)
@@ -1825,13 +1890,29 @@ rawPost(server, "/admin/api/admins/create", adminOnly(function(req, res, ctx)
     if not name or not email then
         return failure(res, 400, "A name and a valid email are required")
     end
-    local created, err = admin.createAdmin(name, email)
-    if not created then
-        return failure(res, err == "email_taken" and 409 or 500, ADMIN_ERRORS[err] or "Failed to add admin")
+    if not admin.isAssignableRole(body.role) then
+        return failure(res, 400, ADMIN_ERRORS.invalid_role)
     end
-    auditAs(ctx, "admin.create", nil, created.name .. " <" .. email .. ">")
-    return {id = created.id, name = created.name}
-end, {mutating = true, superadmin = true}))
+    local created, err = admin.createAdmin(name, email, body.role)
+    if not created then
+        return failure(res, err == "email_taken" and 409 or 500, ADMIN_ERRORS[err] or "Failed to add person")
+    end
+    auditAs(ctx, "admin.create", nil, created.name .. " <" .. email .. "> as " .. created.role)
+    return {id = created.id, name = created.name, role = created.role}
+end, {mutating = true, can = "manage_people"}))
+
+rawPost(server, "/admin/api/admins/role", adminOnly(function(req, res, ctx)
+    local body = jsonBody(req)
+    if not admin.isAssignableRole(body.role) then
+        return failure(res, 400, ADMIN_ERRORS.invalid_role)
+    end
+    local updated = admin.setRole(body.id, body.role)
+    if not updated then
+        return failure(res, 404, "Person not found (the superadmin's role can't be changed)")
+    end
+    auditAs(ctx, "admin.role", nil, updated.name .. ": " .. tostring(updated.old_role) .. " -> " .. updated.role)
+    return {id = updated.id, name = updated.name, role = updated.role}
+end, {mutating = true, can = "manage_people"}))
 
 rawPost(server, "/admin/api/admins/rename", adminOnly(function(req, res, ctx)
     local body = jsonBody(req)
@@ -1841,20 +1922,20 @@ rawPost(server, "/admin/api/admins/rename", adminOnly(function(req, res, ctx)
     end
     local renamed = admin.renameAdmin(body.id, name)
     if not renamed then
-        return failure(res, 404, "Admin not found")
+        return failure(res, 404, "Person not found")
     end
     auditAs(ctx, "admin.rename", nil, "admin #" .. tostring(renamed.id) .. " -> " .. renamed.name)
     return {id = renamed.id, name = renamed.name}
-end, {mutating = true, superadmin = true}))
+end, {mutating = true, can = "manage_people"}))
 
 rawPost(server, "/admin/api/admins/delete", adminOnly(function(req, res, ctx)
     local removed = admin.removeAdmin(jsonBody(req).id)
     if not removed then
-        return failure(res, 404, "Admin not found (the superadmin can't be removed)")
+        return failure(res, 404, "Person not found (the superadmin can't be removed)")
     end
     auditAs(ctx, "admin.delete", nil, removed.name)
     return {success = true, id = removed.id}
-end, {mutating = true, superadmin = true}))
+end, {mutating = true, can = "manage_people"}))
 
 rawPost(server, "/admin/api/admins/emails/add", adminOnly(function(req, res, ctx)
     local body = jsonBody(req)
@@ -1864,11 +1945,11 @@ rawPost(server, "/admin/api/admins/emails/add", adminOnly(function(req, res, ctx
     end
     local added, err = admin.addEmail(body.id, email)
     if not added then
-        return failure(res, err == "email_taken" and 409 or 404, ADMIN_ERRORS[err] or "Admin not found")
+        return failure(res, err == "email_taken" and 409 or 404, ADMIN_ERRORS[err] or "Person not found")
     end
     auditAs(ctx, "admin.email.add", nil, email .. " -> admin #" .. tostring(added.admin_id))
     return {email = added.email, admin_id = added.admin_id}
-end, {mutating = true, superadmin = true}))
+end, {mutating = true, can = "manage_people"}))
 
 rawPost(server, "/admin/api/admins/emails/remove", adminOnly(function(req, res, ctx)
     local email = admin.normalizeEmail(jsonBody(req).email)
@@ -1881,7 +1962,7 @@ rawPost(server, "/admin/api/admins/emails/remove", adminOnly(function(req, res, 
     end
     auditAs(ctx, "admin.email.remove", nil, email .. " from admin #" .. tostring(removed.admin_id))
     return {success = true}
-end, {mutating = true, superadmin = true}))
+end, {mutating = true, can = "manage_people"}))
 
 db.migrate()
 pruneExpiredData()
