@@ -23,7 +23,7 @@ The admin panel lives at `/admin`. Sign-in uses [Hack Club Auth](https://auth.ha
 
 | | superadmin | admin | keyholder |
 | --- | --- | --- | --- |
-| Sees keys and their request activity | all | all | their own |
+| Sees keys and their request activity | all | their own | their own |
 | Creates keys | any perms, any owner | `read` or `write`, owned by them | no |
 | Rotates, renames, deletes, changes perms | any key | their own keys | no |
 | Sees a full key | at create/rotate, and can reveal any key later (audit-logged) | once, at create/rotate | never |
@@ -36,7 +36,7 @@ The admin panel lives at `/admin`. Sign-in uses [Hack Club Auth](https://auth.ha
 
 `admin` keys can only be created from the panel; `POST /key/create` only creates `read` and `write` keys.
 
-Upgrading from the single `is_superadmin` flag happens automatically on startup: the superadmin stays the superadmin and everyone else becomes a keyholder, so nobody sees more than before. Promote the ones who should be admins from the People tab.
+Upgrading from the single `is_superadmin` flag happens automatically on startup: the superadmin stays the superadmin and everyone else becomes an admin, so everyone keeps exactly what they could do before. Switch anyone who should only look at their keys to keyholder from the People tab. The old `is_superadmin` column is kept in sync for one release so a rollback still works; a later release drops it.
 
 ### Setup
 
@@ -68,4 +68,4 @@ astra run scripts/seed.lua   # a superadmin, two admins, two keyholders, 12 keys
 astra run server.lua         # then open http://localhost:3000/admin/dev-login
 ```
 
-`/admin/dev-login` signs in as any existing person with no password. It only exists when `ADMIN_DEV_LOGIN=1` **and** `PUBLIC_URL` is `localhost`, `127.0.0.1` or `[::1]`; anywhere else the route isn't registered. Never set the flag on a deployed instance. The seed script refuses to run unless `DATABASE_URL` and `PUBLIC_URL` are both local, and won't touch a database that already has people in it unless you pass `SEED_RESET=1`, which wipes the admin tables first.
+`/admin/dev-login` signs in as any existing person with no password. It only exists when `ADMIN_DEV_LOGIN=1` **and** `PUBLIC_URL` is `localhost`, `127.0.0.1` or `[::1]` **and** `DATABASE_URL` points at one of those hosts (with no `host`, `hostaddr` or `service` parameter); anywhere else the route isn't registered. It also refuses connections that don't come from this machine. Never set the flag on a deployed instance. The seed script refuses to run unless `DATABASE_URL` and `PUBLIC_URL` are both local by the same rules, and won't touch a database that already has people in it unless you pass `SEED_RESET=1`, which wipes the admin tables first.

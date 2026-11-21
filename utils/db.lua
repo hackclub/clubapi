@@ -4,7 +4,7 @@ local db = {}
 
 local conn = nil
 
-local ROLE_CHECK = "CHECK (role IN ('superadmin', 'admin', 'keyholder'))"
+local ROLE_CHECK = "CONSTRAINT admins_role_check CHECK (role IN ('superadmin', 'admin', 'keyholder'))"
 
 local MIGRATIONS = {
     "CREATE TABLE IF NOT EXISTS api_keys (key text PRIMARY KEY, name text, perms text NOT NULL)",
@@ -35,7 +35,8 @@ local MIGRATIONS = {
     "CREATE TABLE IF NOT EXISTS admins (" ..
         "id bigserial PRIMARY KEY, " ..
         "name text NOT NULL, " ..
-        "role text NOT NULL DEFAULT 'keyholder' " .. ROLE_CHECK .. ", " ..
+        "is_superadmin boolean NOT NULL DEFAULT false, " ..
+        "role text NOT NULL DEFAULT 'admin' " .. ROLE_CHECK .. ", " ..
         "created_at timestamptz NOT NULL DEFAULT now())",
     "CREATE TABLE IF NOT EXISTS admin_emails (" ..
         "email text PRIMARY KEY, " ..
@@ -53,15 +54,19 @@ local MIGRATIONS = {
         "key_name text, " ..
         "detail text, " ..
         "created_at timestamptz NOT NULL DEFAULT now())",
-    -- Roles replace the old admins.is_superadmin boolean. Existing non-superadmins become keyholders,
-    -- which keeps what they can see unchanged; the superadmin promotes the ones who should be admins.
-    "ALTER TABLE admins ADD COLUMN IF NOT EXISTS role text " .. ROLE_CHECK,
-    "UPDATE admins a SET role = CASE WHEN to_jsonb(a) ->> 'is_superadmin' = 'true' THEN 'superadmin' ELSE 'keyholder' END " ..
-        "WHERE role IS NULL",
-    "ALTER TABLE admins ALTER COLUMN role SET DEFAULT 'keyholder'",
+    -- Roles replace the old admins.is_superadmin boolean. Existing non-superadmins become admins,
+    -- which keeps what they can do unchanged. is_superadmin stays in sync for one more release so the
+    -- previous version still works during a rollout or a rollback; drop it in a later release.
+    "ALTER TABLE admins ADD COLUMN IF NOT EXISTS is_superadmin boolean NOT NULL DEFAULT false",
+    "ALTER TABLE admins ADD COLUMN IF NOT EXISTS role text",
+    "UPDATE admins SET role = CASE WHEN is_superadmin THEN 'superadmin' ELSE 'admin' END WHERE role IS NULL",
+    "ALTER TABLE admins ALTER COLUMN role SET DEFAULT 'admin'",
     "ALTER TABLE admins ALTER COLUMN role SET NOT NULL",
+    "ALTER TABLE admins DROP CONSTRAINT IF EXISTS admins_role_check",
+    "ALTER TABLE admins ADD " .. ROLE_CHECK,
     "CREATE UNIQUE INDEX IF NOT EXISTS admins_single_superadmin_role_idx ON admins (role) WHERE role = 'superadmin'",
-    "ALTER TABLE admins DROP COLUMN IF EXISTS is_superadmin",
+    "UPDATE admins SET is_superadmin = (role = 'superadmin') WHERE is_superadmin IS DISTINCT FROM (role = 'superadmin')",
+    "CREATE UNIQUE INDEX IF NOT EXISTS admins_single_superadmin_idx ON admins (is_superadmin) WHERE is_superadmin",
 }
 
 function db.get()

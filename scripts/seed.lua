@@ -16,10 +16,8 @@ end
 
 -- This script inserts junk and can truncate tables, so it only runs against a database and a
 -- PUBLIC_URL that are both on this machine.
-local databaseHost = (os.getenv("DATABASE_URL") or ""):match("^%w+://([^/?]*)") or ""
-databaseHost = databaseHost:gsub("^.*@", "")
 local publicHost = (os.getenv("PUBLIC_URL") or ""):gsub("/+$", ""):match("^https?://(.+)$")
-if not admin.isLocalHost(databaseHost) or not admin.isLocalHost(publicHost) then
+if not admin.isLocalDatabaseUrl(os.getenv("DATABASE_URL")) or not admin.isLocalHost(publicHost) then
     fail("Refusing to seed: DATABASE_URL and PUBLIC_URL must both point at localhost.")
 end
 

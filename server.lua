@@ -1553,8 +1553,8 @@ rawGet(server, "/admin", function(req, res)
 end)
 
 -- Local testing only: signs in as any existing person without Hack Club Auth. The route isn't even
--- registered unless ADMIN_DEV_LOGIN is on and PUBLIC_URL is localhost (see admin.devLoginEnabled),
--- and it also turns away requests that didn't arrive on a localhost Host header.
+-- registered unless ADMIN_DEV_LOGIN is on and PUBLIC_URL and DATABASE_URL are both local (see
+-- admin.devLoginEnabled), and it also turns away connections that don't come from this machine.
 if DEV_LOGIN then
     print("WARNING: /admin/dev-login is enabled. Anyone who can reach this server can sign in as any admin.")
 
@@ -1565,7 +1565,8 @@ if DEV_LOGIN then
     end
 
     rawGet(server, "/admin/dev-login", function(req, res)
-        if not admin.isLocalHost(req:headers().host) then
+        local peer = req:ip_address()
+        if not admin.isLoopbackAddress(peer and peer.address) then
             return failure(res, 403, "Dev login only works on localhost")
         end
 
@@ -1575,7 +1576,7 @@ if DEV_LOGIN then
             for _, person in ipairs(admin.listAdmins() or {}) do
                 local email = person.emails[1]
                 if email then
-                    table.insert(links, '<li><a href="/admin/dev-login?email=' .. escapeHtml(email) .. '">'
+                    table.insert(links, '<li><a href="/admin/dev-login?email=' .. escapeHtml(admin.urlEncode(email)) .. '">'
                         .. escapeHtml(person.name) .. "</a> (" .. escapeHtml(person.role) .. ", " .. escapeHtml(email) .. ")</li>")
                 end
             end

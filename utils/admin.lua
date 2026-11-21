@@ -34,8 +34,8 @@ local CAPABILITIES = {
         impersonate = true,
     },
     admin = {
-        view_keys = "all",
-        view_requests = "all",
+        view_keys = "own",
+        view_requests = "own",
         create_keys = true,
         manage_keys = "own",
     },
@@ -99,14 +99,56 @@ function admin.isLocalHost(hostAndPort)
     return LOCAL_HOSTS[host] == true
 end
 
--- The dev login skips Hack Club Auth, so it needs both the flag and a PUBLIC_URL that can only be
--- a developer's machine. A deployed instance has its real hostname there, or OAuth wouldn't work.
+local function percentDecode(value)
+    return (value:gsub("%%(%x%x)", function(hex)
+        return string.char(tonumber(hex, 16))
+    end))
+end
+
+local REMOTE_HOST_PARAMS = { host = true, hostaddr = true, service = true }
+
+function admin.isLocalDatabaseUrl(databaseUrl)
+    if type(databaseUrl) ~= "string" then
+        return false
+    end
+    local authority, rest = databaseUrl:match("^%a[%w+.-]*://([^/?#]*)(.*)$")
+    if not authority then
+        return false
+    end
+    local query = rest:match("%?([^#]*)") or ""
+    for pair in query:gmatch("[^&]+") do
+        local key = percentDecode(pair:match("^([^=]*)")):lower()
+        if REMOTE_HOST_PARAMS[key] then
+            return false
+        end
+    end
+    local hostAndPort = percentDecode((authority:gsub("^.*@", "")))
+    if hostAndPort:find(",") then
+        return false
+    end
+    return admin.isLocalHost(hostAndPort)
+end
+
+function admin.isLoopbackAddress(address)
+    if type(address) ~= "string" then
+        return false
+    end
+    local ip = address:lower():gsub("^%[(.*)%]$", "%1"):gsub("^::ffff:", "")
+    return ip == "::1" or ip:match("^127%.%d+%.%d+%.%d+$") ~= nil
+end
+
+admin.urlEncode = urlEncode
+
+-- The dev login skips Hack Club Auth, so it needs the flag, a PUBLIC_URL that can only be a
+-- developer's machine and a DATABASE_URL that can only be a local database. A deployed instance has
+-- its real hostname in PUBLIC_URL, or OAuth wouldn't work.
 function admin.devLoginEnabled()
     local flag = (os.getenv("ADMIN_DEV_LOGIN") or ""):lower()
     if flag ~= "1" and flag ~= "true" then
         return false
     end
     return admin.isLocalHost(publicUrl():match("^https?://(.+)$"))
+        and admin.isLocalDatabaseUrl(os.getenv("DATABASE_URL"))
 end
 
 function admin.redirectUri()
@@ -150,7 +192,7 @@ function admin.bootstrapSuperadmin(name, emails)
     end
     local ok, err = pcall(function()
         conn:execute(
-            "INSERT INTO admins (name, role) SELECT $1, 'superadmin' " ..
+            "INSERT INTO admins (name, role, is_superadmin) SELECT $1, 'superadmin', true " ..
             "WHERE NOT EXISTS (SELECT 1 FROM admins WHERE role = 'superadmin')",
             { name }
         )
